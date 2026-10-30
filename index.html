@@ -465,6 +465,14 @@ function migrate(D) {
   }));
   return changed;
 }
+/* one-time fix: two snail sales were entered twice (Mom = Mommy, Friend = Erikah); keep the farmer's own entries */
+function removeDuplicateSales() {
+  if (S.settings.fix1) return false;
+  const dup = ['sale-snail-mom', 'sale-snail-friend'];
+  S.sales = S.sales.filter(s => !dup.includes(s.id));
+  S.settings.fix1 = true;
+  return true;
+}
 function load(seed) {
   try {
     const raw = localStorage.getItem(KEY);
@@ -593,7 +601,7 @@ async function startOnline() {
     first.add(key);
     if (first.size === need) {
       ONLINE_READY = true; setSync('ok', 'Saved online'); cacheLocal();
-      if (migrate(S)) { save(); softRender(); } else if (syncAgain) queueSync();
+      if (migrate(S) | removeDuplicateSales()) { save(); softRender(); } else if (syncAgain) queueSync();
     }
   };
   const fail = e => { if (e && e.code !== 'unavailable') setSync('err', 'Offline. Showing saved copy'); };
