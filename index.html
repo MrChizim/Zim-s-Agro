@@ -2524,9 +2524,9 @@ function finishBag(g, date, batches, opened) {
 }
 const CHAT_KEY = 'zimsAgro.chat';
 let CHAT = (() => { try { return JSON.parse(localStorage.getItem(CHAT_KEY)) || []; } catch (e) { return []; } })();
-let chatBusy = null;
+let chatBusy = null, chatAsk = null;
 const saveChat = () => { try { localStorage.setItem(CHAT_KEY, JSON.stringify(CHAT.slice(-40))); } catch (e) {} };
-const EXAMPLES = ['Sold 10 snails for 5,500 to Ada', 'Bought 2 bags of finisher at 23k each', 'Finisher bag finished', '3 broilers died', 'Mommy paid 20k', 'Who owes me?', 'How much have I spent on feed?'];
+const EXAMPLES = ['Sold 10 snails for 5,500 to Ada', 'Bought 2 bags of finisher at 23k each', 'Finisher bag finished', '3 broilers died', 'Mommy paid 20k', 'Who owes me?', 'What is left to do today?', 'How many died this week?'];
 function askCard() {
   if (SAMPLE_OFF) return '';
   return `<section class="askcard">
@@ -2537,43 +2537,95 @@ function askCard() {
 }
 /* ============ free, built-in assistant: reads plain sentences, no AI service ============ */
 const ANIMALS = [[/\bsnails?\b/, 'Snails', 'snails'], [/\b(cat)?fish(es)?\b/, 'Catfish', 'fish'], [/\bturkeys?\b|\bpoults?\b/, 'Turkeys', 'turkeys'], [/\bbroilers?\b|\bchicks?\b|\bchickens?\b|\bbirds?\b|\bfowls?\b/, 'Broilers', 'birds']];
-const WORDNUM = {one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, twenty: 20, a: 1, an: 1};
+const WORDNUM = {one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, hundred: 100, dozen: 12, a: 1, an: 1};
+// spelling slips, short forms and pidgin, turned into the words the reader looks for
+const SAYINGS = [
+  [/\b(?:don|dey|done|have|has) (?:die|dies|died)\b/g, 'died'], [/\b(?:don|done|has|have) finish(?:ed)?\b/g, 'finished'], [/\bfinish(?= ?$)/g, 'finished'],
+  [/\b(?:don|done) pay\b/g, 'paid'], [/\b(?:yday|ystd|ystdy|yest|yesterdy|yesturday|yestaday|yesterda|yesteday)\b/g, 'yesterday'],
+  [/\b(?:tmrw|tmr|tmrow|tomoro|tomorow|tommorow|tommorrow|tomorro|2moro|2morrow)\b/g, 'tomorrow'], [/\b(?:2day|tday|todai|tody)\b/g, 'today'],
+  [/\b(?:sld|solde|selled|soled)\b/g, 'sold'], [/\b(?:bot|bougt|boght|bougth|buyed|baught)\b/g, 'bought'], [/\b(?:dyed|dide|dieded|dies)\b/g, 'died'],
+  [/\b(?:payed|piad|pd)\b/g, 'paid'], [/\b(?:chikin|chiken|chikens|chickins|chikins)\b/g, 'chickens'], [/\b(?:snial|snal|sanil|snel|snaill)(s?)\b/g, 'snail$1'],
+  [/\b(?:turky|turki|tukey|turkies|turkys)\b/g, 'turkeys'], [/\b(?:brolier|broiller|boiler|broler|briler)(s?)\b/g, 'broiler$1'], [/\b(?:catfsh|cat fish|fsh)\b/g, 'catfish'],
+  [/\b(?:starta|stater)\b/g, 'starter'], [/\b(?:finsher|finisha|finnisher|finishr)\b/g, 'finisher'], [/\b(?:vacine|vaccin|vacin|vacsine)\b/g, 'vaccine'], [/\bthousand naira\b/g, 'thousand']
+];
+const VOCAB = 'broilers turkeys catfish chickens snails starter finisher yesterday tomorrow vaccine vaccinated vitamins remind reminder finished weighed average salary rented returned medicine transport charcoal sawdust thousand bought kilograms'.split(' ');
+const KEEP = new Set(['brought', 'started', 'remained', 'remainder', 'remaining', 'startup', 'renter', 'returns', 'thousands', 'medicines']);
+function lev(a, b) {
+  const d = Array.from({length: a.length + 1}, (_, i) => [i]);
+  for (let j = 1; j <= b.length; j++) d[0][j] = j;
+  for (let i = 1; i <= a.length; i++) for (let j = 1; j <= b.length; j++) d[i][j] = Math.min(d[i - 1][j] + 1, d[i][j - 1] + 1, d[i - 1][j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+  return d[a.length][b.length];
+}
+const knownNames = () => [...S.sales.map(x => x.buyer), ...S.staff.map(x => x.name), ...S.rentals.map(x => x.renter), ...S.tools.map(x => x.name), ...S.batches.map(x => x.name), ...S.medicines.map(x => x.name)].filter(Boolean).join(' ').toLowerCase().split(/[^a-z]+/);
+function fixWords(s) {
+  SAYINGS.forEach(([re, to]) => { s = s.replace(re, to); });
+  const names = new Set(knownNames());
+  return s.replace(/[a-z]{6,}/g, w => {
+    if (VOCAB.includes(w) || KEEP.has(w) || names.has(w)) return w;
+    const lim = w.length >= 8 ? 2 : 1; let best = '', bd = lim + 1;
+    for (const v of VOCAB) if (v[0] === w[0] && Math.abs(v.length - w.length) <= lim) { const d = lev(w, v); if (d < bd) { bd = d; best = v; } }
+    return best || w;
+  });
+}
 function moneyIn(s) {
-  // every amount in the sentence: "5,500", "5k", "N23k", "1.5m", "23000"
+  // every amount in the sentence: "5,500", "5k", "N23k", "1.5m", "23000", "500 naira"
   const out = [];
-  s.replace(/(₦|ngn|naira|n)?\s?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|m|million)?\b/g, (m, cur, n, unit, idx) => {
+  s.replace(/(₦|ngn|naira|n)?\s?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|m|million)?\b(\s*naira)?/g, (m, cur, n, unit, nai, idx) => {
     let v = parseFloat(n.replace(/,/g, '')); if (isNaN(v)) return m;
     if (unit === 'k' || unit === 'thousand') v *= 1000; if (unit === 'm' || unit === 'million') v *= 1e6;
-    out.push({v, idx, money: !!(cur || unit) || v >= 1000, raw: m}); return m;
+    out.push({v, idx, money: !!(cur || unit || nai) || v >= 1000, raw: m}); return m;
   });
   return out;
 }
 function countBefore(s, wordRe) {
-  const m = s.match(new RegExp('(\\d[\\d,]*|' + Object.keys(WORDNUM).join('|') + ')\\s+(?:[a-z-]+\\s+){0,2}?(' + wordRe + ')'));
+  const m = s.match(new RegExp('(\\d[\\d,]*|\\b(?:' + Object.keys(WORDNUM).join('|') + '))\\s+(?:[a-z-]+\\s+){0,2}?(' + wordRe + ')'));
   if (!m) return null; const n = m[1].replace(/,/g, '');
   return {n: WORDNUM[n] || parseFloat(n), idx: m.index, raw: m[0]};
 }
-function whenOf(s) { return /\byesterday\b/.test(s) ? addDays(today(), -1) : /\b(\d+)\s+days?\s+ago\b/.test(s) ? addDays(today(), -+s.match(/\b(\d+)\s+days?\s+ago\b/)[1]) : today(); }
+const DAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+const dowGap = d => (new Date(today() + 'T00:00').getDay() - DAYS.indexOf(d) + 7) % 7;
+function whenOf(s) {
+  if (/\byesterday\b/.test(s)) return addDays(today(), -1);
+  let m = s.match(/\b(\d+|two|three|four|five|six)\s+days?\s+ago\b/); if (m) return addDays(today(), -(WORDNUM[m[1]] || +m[1]));
+  if (/\blast week\b/.test(s)) return addDays(today(), -7);
+  m = s.match(new RegExp('\\b(' + DAYS.join('|') + ')\\b')); if (m) return addDays(today(), -(dowGap(m[1]) || (/\blast\b/.test(s) ? 7 : 0)));
+  return today();
+}
+function dueOf(s) {
+  if (/\btomorrow\b/.test(s)) return addDays(today(), 1);
+  if (/\bnext week\b/.test(s)) return addDays(today(), 7);
+  let m = s.match(/\bin\s+(\d+|two|three|four|five|six)\s+days?\b/); if (m) return addDays(today(), WORDNUM[m[1]] || +m[1]);
+  m = s.match(new RegExp('\\b(' + DAYS.join('|') + ')\\b')); if (m) return addDays(today(), (7 - dowGap(m[1])) % 7 || 7);
+  return /\btoday\b/.test(s) ? today() : null;
+}
 function animalOf(s) { for (const [re, ent, word] of ANIMALS) if (re.test(s)) return {ent, word}; return null; }
-function pickBatch(ent) {
+// a batch named in the sentence, e.g. "broilers b", "batch 2", or its full name
+function batchIn(s, ent) {
+  const bs = activeBatches(ent), full = bs.find(b => b.name && s.includes(b.name.toLowerCase())); if (full) return full;
+  const m = s.match(/\bbatch\s+([a-z0-9]+)\b/) || s.match(/\b(?:broilers?|turkeys?|snails?|fish|catfish|tank|pond|pen)\s+(?:batch\s+)?([a-z]|\d+)\b/);
+  return m ? bs.find(b => b.name.toLowerCase().split(/\s+/).slice(1).includes(m[1])) || null : null;
+}
+function pickBatch(ent, s) {
+  const named = s && batchIn(s, ent); if (named) return named;
   const bs = activeBatches(ent).map(b => ({b, n: batchStats(b).current})).sort((x, y) => y.n - x.n);
   return bs.length ? bs[0].b : null;
 }
 function cap(w) { return w.replace(/\b[a-z]/g, c => c.toUpperCase()); }
+const NOT_NAME = /^(i|we|me|my|you|he|she|they|it|the|a|someone|somebody|customer|buyer)$/;
 function nameAfterTo(s) {
   const m = s.match(/\bto\s+(?:my\s+|the\s+|a\s+)?([a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*)?)/);
   if (!m) return '';
-  const stop = /\b(for|at|and|on|yesterday|today|this|last|each|not|but|who|she|he|they|pay|paid|owes?|with|from|in)\b.*$/;
-  return cap(m[1].replace(stop, '').trim());
+  const stop = /\b(for|at|and|on|yesterday|today|this|last|each|not|but|who|she|he|they|pay|paid|owes?|with|from|in|of|kg|packs?)\b.*$/;
+  const n = m[1].replace(stop, '').trim(); return NOT_NAME.test(n) ? '' : cap(n);
 }
 function knownBuyer(name) {
   const n = name.toLowerCase(); if (!n) return '';
-  const all = [...new Set(S.sales.map(x => (x.buyer || '').trim()).filter(Boolean))];
-  return all.find(b => b.toLowerCase() === n) || all.find(b => b.toLowerCase().startsWith(n) || n.startsWith(b.toLowerCase())) || name;
+  const all = [...new Set([...S.sales.map(x => x.buyer), ...S.rentals.map(x => x.renter)].map(x => (x || '').trim()).filter(Boolean))];
+  return all.find(b => b.toLowerCase() === n) || all.find(b => b.toLowerCase().startsWith(n) || n.startsWith(b.toLowerCase())) || all.find(b => lev(b.toLowerCase(), n) <= (n.length > 5 ? 2 : 1)) || name;
 }
 function feedFromText(s) {
   const names = [...new Set([...S.bags.map(g => g.feed), ...feedChoices([])])];
-  const key = /starter/.test(s) ? 'starter' : /finisher/.test(s) ? 'finisher' : /aller/.test(s) ? 'aller' : /new\s*hope/.test(s) ? 'new hope' : /blue\s*crown/.test(s) ? 'blue crown' : '';
+  const key = /starter/.test(s) ? 'starter' : /finisher/.test(s) ? 'finisher' : /grower/.test(s) ? 'grower' : /aller/.test(s) ? 'aller' : /new\s*hope/.test(s) ? 'new hope' : /blue\s*crown/.test(s) ? 'blue crown' : /coppens/.test(s) ? 'coppens' : '';
   if (!key) return '';
   const mm = (s.match(/(\d(?:\.\d)?)\s*mm/) || [])[1];
   const hits = names.filter(n => n.toLowerCase().includes(key));
@@ -2581,103 +2633,252 @@ function feedFromText(s) {
 }
 function batchesForFeed(feed) {
   const f = feed.toLowerCase();
-  const fish = /aller|hope|crown|mm/.test(f);
+  const fish = /aller|hope|crown|coppens|mm/.test(f);
   return activeBatches().filter(b => fish ? b.ent === 'Catfish' : (b.ent === 'Broilers' || b.ent === 'Turkeys')).filter(b => {
     if (fish) return true; const d = dayOfAge(b, today()) || 0; return /starter/.test(f) ? d <= 21 : /finisher/.test(f) ? d > 21 : true; }).map(b => b.id);
 }
-function answerQuestion(s) {
-  const m = money3('month');
-  if (/feed/.test(s)) { const spent = sum(S.bags, 'price'), store = S.bags.filter(g => !g.opened).length, use = S.bags.filter(g => g.opened && !g.finished).map(g => g.feed);
-    return `You have bought ${S.bags.length} bag${S.bags.length === 1 ? '' : 's'} of feed for ${money(spent)}. ${use.length ? 'In use now: ' + use.join(', ') + '. ' : ''}${store} still in the store.`; }
-  if (/\bowe|owing|debt|credit|not paid|unpaid/.test(s)) { const l = buyerList().filter(o => o.owe > 0);
-    return l.length ? 'These people owe you: ' + l.map(o => `${o.name} ${money(o.owe)}`).join(', ') + `. Total ${money(sum(l, 'owe'))}.` : 'Nobody owes you anything right now.'; }
-  const a = animalOf(s);
-  if (a && /sell|price|charge|cost/.test(s)) { const bs = activeBatches(a.ent); if (!bs.length) return `You have no ${a.word} batches right now.`;
-    return bs.map(b => { const st = batchStats(b), tot = st.purchase + st.feedCost + st.medCost + st.otherCost, kept = st.current + st.sold + num(b.processed), each = kept ? tot / kept : 0;
-      return `${b.name}: each costs you about ${money(Math.round(each))}. Sell at ${money(Math.round(each * 1.3))} or more for 30% profit.`; }).join(' '); }
-  if (a) { const bs = activeBatches(a.ent); return bs.length ? bs.map(b => `${b.name}: ${fmtN(batchStats(b).current)} alive`).join(', ') + '.' : `You have no ${a.word} right now.`; }
-  if (/profit|made|money|spent|spend|income/.test(s)) return `This month: ${money(m.i)} in, ${money(m.o)} out, so ${m.p >= 0 ? 'a profit of ' + money(m.p) : 'a loss of ' + money(-m.p)}. People owe you ${money(owedTotal())}.`;
-  return 'I can answer: how much you spent on feed, who owes you, how many animals you have, or what to sell them for.';
+function toolIn(s, pool = S.tools) {
+  // the tool whose name fits best: the most name words found, the full name breaks ties
+  const words = n => n.toLowerCase().split(/[^a-z]+/).filter(w => w.length >= 4 && !/^(big|small|tool|tools)$/.test(w));
+  const score = t => words(t.name).filter(w => new RegExp('\\b' + w + 's?\\b').test(s)).length + (s.includes(t.name.toLowerCase()) ? 0.5 : 0);
+  const best = pool.map(t => ({t, n: score(t)})).filter(x => x.n).sort((a, b) => b.n - a.n)[0];
+  return best ? best.t : null;
 }
-function parseEntry(text) {
-  const parts = String(text).split(/[\n.;]+|\band then\b|\balso\b/i).map(x => x.trim()).filter(Boolean);
-  const actions = [], notes = [];
-  for (const raw of parts) {
-    const s = raw.toLowerCase().replace(/[’']/g, "'");
-    const date = whenOf(s), money = moneyIn(s);
-    const isQ = /\?$/.test(raw.trim()) || /^(how|what|who|when|which|do|does|did|is|are)\b/.test(s);
+function staffIn(s) {
+  const act = S.staff.filter(x => x.active !== 'No');
+  return act.find(x => x.name && s.includes(x.name.toLowerCase())) || act.find(x => (x.name || '').toLowerCase().split(/\s+/).some(w => w.length >= 3 && new RegExp('\\b' + w + '\\b').test(s))) || null;
+}
+const plainText = h => String(h).replace(/<[^>]+>/g, ' ').replace(/&amp;/g, '&').replace(/&#39;|&apos;/g, "'").replace(/&quot;/g, '"').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/\s+/g, ' ').trim();
+const listOut = (arr, n = 6) => arr.slice(0, n).join('; ') + (arr.length > n ? `; and ${arr.length - n} more` : '');
+function periodOf(s) { return /\btoday\b/.test(s) ? ['today', 'today'] : /\bweek\b/.test(s) ? ['week', 'in the last 7 days'] : /\byear\b/.test(s) ? ['year', 'this year'] : /\b(ever|all time|total|so far|altogether|since)\b/.test(s) ? ['all', 'so far'] : ['month', 'this month']; }
+const inP = (d, p) => p === 'today' ? d === today() : p === 'week' ? d && daysBetween(d, today()) >= 0 && daysBetween(d, today()) < 7 : inPeriod(d, p);
+function answerQuestion(s) {
+  const [p, pl] = periodOf(s), a = animalOf(s);
+  if (/\bowe|owing|debt|credit|not paid|unpaid|haven'?t paid|has not paid/.test(s)) {
+    const l = buyerList().filter(o => o.owe > 0), r = S.rentals.filter(x => num(x.amount) > num(x.paid));
+    const who = [...l.map(o => `${o.name} ${money(o.owe)}`), ...r.map(x => `${x.renter} ${money(num(x.amount) - num(x.paid))} (tool rent)`)];
+    return who.length ? 'These people owe you: ' + who.join(', ') + `. Total ${money(owedTotal())}.` : 'Nobody owes you anything right now.';
+  }
+  if (/\b(died|dead|deaths?|mortality|lost)\b/.test(s)) {
+    const rows = S.mortality.filter(m => inP(m.date, p) && (!a || bEnt(m.batch) === a.ent));
+    if (!rows.length) return `No deaths recorded ${pl}${a ? ' for ' + a.word : ''}.`;
+    const by = {}; rows.forEach(m => { const n = nameOf('batches', m.batch) || 'Unknown batch'; by[n] = (by[n] || 0) + num(m.count); });
+    return `${fmtN(sum(rows, 'count'))} died ${pl}: ` + Object.entries(by).map(([n, c]) => `${n} ${fmtN(c)}`).join(', ') + '.';
+  }
+  if (/\b(medicine|medication|vaccine|vaccinat|drug|dose|treatment|injection)/.test(s)) {
+    const t = today(), due = S.doses.filter(d => d.status === 'Planned' && (!a || d.ent === a.ent)).sort((x, y) => (x.date + (x.time || '')).localeCompare(y.date + (y.time || '')));
+    const late = due.filter(d => d.date < t), next = due.filter(d => d.date >= t);
+    const line = d => `${(byId('medicines', d.med) || {}).name || 'Medicine'}${d.batch ? ' for ' + nameOf('batches', d.batch) : ''} ${d.date === t ? 'today' : fmtDay(d.date)}${d.time ? ' at ' + fmtTime(d.time) : ''}`;
+    const low = S.medicines.filter(medLow).map(m => m.name);
+    if (!due.length) return 'No medicine is planned.' + (low.length ? ` Running low: ${low.join(', ')}.` : '') + ' Plan a course from Medication.';
+    return (late.length ? `Overdue: ${listOut(late.map(line), 4)}. ` : '') + (next.length ? `Next: ${listOut(next.map(line), 4)}.` : '') + (low.length ? ` Running low: ${low.join(', ')}.` : '');
+  }
+  if (/\btools?\b|\brent(ed|al|als)?\b|\bhired?\b|who has (my|the)/.test(s) || toolIn(s)) {
+    const out = S.rentals.filter(r => !r.returned);
+    if (!out.length) return 'All your tools are in. Nothing is rented out.';
+    return 'Tools out now: ' + listOut(out.map(r => `${fmtN(r.qty)} ${nameOf('tools', r.tool)} with ${r.renter}${r.due ? (r.due < today() ? ', late since ' : ', due ') + fmtDay(r.due) : ''}`)) + '.';
+  }
+  if (/\b(what|which|anything|any)\b.*\b(do|jobs?|tasks?|work|left|pending|remaining|plan)\b/.test(s) && !/\b(sell|price|money|spend|spent|feed)\b/.test(s)) {
+    const left = todayItems().filter(x => !x.done).map(x => plainText(x.title) + (x.time ? ' at ' + fmtTime(x.time) : ''));
+    const todos = S.todos.filter(x => !x.done).map(x => x.text + (x.due ? ' (' + fmtDay(x.due) + ')' : ''));
+    if (!left.length && !todos.length) return 'Nothing left for today. Well done.';
+    return (left.length ? `Still to do today: ${listOut(left, 8)}.` : 'Today\'s jobs are done.') + (todos.length ? ` Tasks: ${listOut(todos, 5)}.` : '');
+  }
+  if (/\bfeed|bags?\b/.test(s) && !/\b(sold|sell)\b/.test(s)) {
+    const spent = sum(S.bags.filter(g => inP(g.bought, p)), 'price'), by = {};
+    S.bags.filter(g => !g.finished).forEach(g => { by[g.feed] = by[g.feed] || [0, 0]; by[g.feed][g.opened ? 0 : 1]++; });
+    const now = Object.entries(by).map(([f, [u, st]]) => `${f}: ${u ? u + ' open' : 'none open'}, ${st} in store`);
+    return `You spent ${money(spent)} on feed ${pl} (${S.bags.filter(g => inP(g.bought, p)).length} bags). ` + (now.length ? now.join('; ') + '.' : 'No feed left. Time to buy.');
+  }
+  if (/\b(packs?|stock|store|frozen|left to sell)\b/.test(s)) {
+    const st = S.inventory.filter(i => num(i.qty) > 0 && (!a || i.ent === a.ent));
+    return st.length ? 'In stock: ' + listOut(st.map(i => `${fmtN(i.qty)} ${i.unit || ''} ${i.item}`.replace(/\s+/g, ' '))) + '.' : 'Nothing in stock.';
+  }
+  if (a && /\bwhen\b|\bready\b|\bharvest/.test(s)) {
+    const bs = activeBatches(a.ent); if (!bs.length) return `You have no ${a.word} right now.`;
+    return bs.map(b => { const w = plainText(sellWindow(b, batchStats(b))); return w ? `${b.name}: ${w}` : `${b.name}: snails are ready when the shell lip is thick and hard, usually 12 to 18 months.`; }).join(' ');
+  }
+  if (a && /\b(sell|price|charge|worth)\b/.test(s)) {
+    const bs = activeBatches(a.ent); if (!bs.length) return `You have no ${a.word} batches right now.`;
+    return bs.map(b => { const st = batchStats(b), tot = st.purchase + st.feedCost + st.medCost + st.otherCost, kept = st.current + st.sold + num(b.processed), each = kept ? tot / kept : 0;
+      return `${b.name}: each costs you about ${money(Math.round(each))}. Sell at ${money(Math.round(each * 1.3))} or more for 30% profit.`; }).join(' ');
+  }
+  if (/\b(weigh|weight|heavy|big|size)\b/.test(s)) {
+    const bs = activeBatches(a ? a.ent : null).filter(b => b.ent !== 'Snails');
+    const l = bs.map(b => { const w = S.weights.filter(x => x.batch === b.id).sort((x, y) => (y.date || '').localeCompare(x.date || ''))[0]; return w ? `${b.name} ${fmtW(w.avg)} on ${fmtDay(w.date)}` : `${b.name} not weighed yet`; });
+    return l.length ? 'Last weights: ' + l.join('; ') + '.' : 'No batches to weigh.';
+  }
+  if (/\b(old|age)\b/.test(s)) {
+    const bs = activeBatches(a ? a.ent : null).filter(b => b.start);
+    return bs.length ? bs.map(b => `${b.name}: day ${dayOfAge(b, today())}`).join(', ') + '.' : 'No start dates recorded.';
+  }
+  if (/\b(profit|made|make|money|spent|spend|income|earn|earned|sales|sold|cost|lose|loss)\b/.test(s)) {
+    const m = money3(p === 'today' || p === 'week' ? 'all' : p, a ? a.ent : undefined);
+    const L = p === 'today' || p === 'week' ? m.L.filter(x => inP(x.date, p)) : m.L, i = sum(L.filter(x => x.dir === 'in'), 'amount'), o = sum(L.filter(x => x.dir === 'out'), 'amount');
+    const what = a ? ` from ${a.word}` : '';
+    if (/\b(sold|sales|income|earn|earned|made|make)\b/.test(s) && !/profit/.test(s)) return `Money in${what} ${pl}: ${money(i)}.` + (a ? '' : ` People still owe you ${money(owedTotal())}.`);
+    if (/\b(spent|spend|cost)\b/.test(s)) return `Money out${what} ${pl}: ${money(o)}.`;
+    return `${pl.charAt(0).toUpperCase() + pl.slice(1)}${what}: ${money(i)} in, ${money(o)} out, so ${i - o >= 0 ? 'a profit of ' + money(i - o) : 'a loss of ' + money(o - i)}.`;
+  }
+  if (a) { const bs = activeBatches(a.ent); return bs.length ? bs.map(b => `${b.name}: ${fmtN(batchStats(b).current)} alive`).join(', ') + '.' : `You have no ${a.word} right now.`; }
+  if (/\b(how many|count|alive|animals)\b/.test(s)) return activeBatches().map(b => `${b.name}: ${fmtN(batchStats(b).current)}`).join(', ') + '.';
+  return 'I can answer: who owes me, how much I spent on feed, how many died this week, what medicine is next, what is left to do today, who has my tools, how many snails I have, when to sell broilers, what to sell them for, and my profit this month.';
+}
+const VERB = /\b(sold|sell|bought|buy|died|dead|paid|spent|finished|weighed|weigh|rented|hired|returned|gave|given|vaccinated|remind|owes?)\b|\?/;
+function splitSentences(text) {
+  return String(text).split(/[\n;!]+|\.(?!\d)|\balso\b/i).map(x => x.trim()).filter(Boolean).flatMap(p => {
+    const out = [];
+    p.split(/\s*,?\s+(?:and then|and|then)\s+/i).forEach(b => {
+      const prev = out.length && out[out.length - 1], lo = fixWords(b.toLowerCase());
+      if (prev && (!VERB.test(lo) || !VERB.test(fixWords(prev.toLowerCase())) || /^(paid|she|he|they|will|has|but|owes?)\b/.test(lo))) out[out.length - 1] += ' and ' + b; else out.push(b);
+    });
+    return out;
+  });
+}
+function parseEntry(text, ask) {
+  // a short answer to a question the assistant just asked ("how much?" -> "5,500")
+  if (ask) {
+    const t = fixWords(String(text).toLowerCase());
+    if (t.split(/\s+/).length <= 5 && !VERB.test(t)) text = ask.raw + (ask.need === 'price' ? ' for ' : ask.need === 'buyer' ? ' to ' : ' ') + text;
+  }
+  const actions = [], notes = []; let next = null;
+  const need = (kind, raw, msg) => { notes.push(msg); next = {need: kind, raw}; };
+  for (const raw of splitSentences(text)) {
+    let s = fixWords(raw.toLowerCase().replace(/[’']/g, "'"));
+    const date = whenOf(s); let cash = moneyIn(s);
+    const isQ = /\?$/.test(raw.trim()) || /^(how|what|who|when|which|do|does|did|is|are|any|have|show|tell me|list)\b/.test(s);
     if (isQ) { notes.push(answerQuestion(s)); continue; }
     // task
-    if (/\b(remind me|reminder|to ?do|need to|have to|don'?t forget|remember to)\b/.test(s)) {
-      const t = raw.replace(/^.*?\b(remind me to|remind me|reminder to|reminder|todo|to do|need to|have to|don'?t forget to|don'?t forget|remember to)\b\s*/i, '').replace(/\b(tomorrow|today|next week)\b/i, '').trim();
-      actions.push({type: 'task', text: cap(t.charAt(0)) + t.slice(1), due: /tomorrow/.test(s) ? addDays(today(), 1) : /next week/.test(s) ? addDays(today(), 7) : /today/.test(s) ? today() : null}); continue;
+    if (/\b(remind me|reminder|to ?do|need to|have to|must|don'?t forget|remember to)\b/.test(s)) {
+      const t = raw.replace(/^.*?\b(remind me to|remind me|reminder to|reminder|todo|to do|need to|have to|must|don'?t forget to|don'?t forget|remember to)\b\s*/i, '')
+        .replace(/\b(tomorrow|today|next week|in \w+ days?|on (?:mon|tues|wednes|thurs|fri|satur|sun)day|(?:mon|tues|wednes|thurs|fri|satur|sun)day)\b/i, '').replace(/\s{2,}/g, ' ').trim();
+      if (t) actions.push({type: 'task', text: cap(t.charAt(0)) + t.slice(1), due: dueOf(s)}); else need('task', raw + ' to', 'Remind you to do what?');
+      continue;
     }
     // a bag ran out
-    if (/\b(finished|ran out|run out|is empty|used up|exhausted|done)\b/.test(s) && /\b(bag|feed|starter|finisher|aller|hope|crown)\b/.test(s)) {
-      const feed = feedFromText(s) || (unfinishedBags()[0] || {}).feed;
-      if (feed) actions.push({type: 'bag_finished', feed, batchIds: [], date}); else notes.push('Which feed ran out? Say for example "finisher bag finished".');
+    if (/\b(finished|ran out|run out|is empty|used up|exhausted|done|empty)\b/.test(s) && /\b(bag|feed|starter|grower|finisher|aller|hope|crown|coppens)\b/.test(s)) {
+      const open = unfinishedBags().filter(g => g.opened), feed = feedFromText(s) || (open.length === 1 ? open[0].feed : '');
+      if (feed) actions.push({type: 'bag_finished', feed, batchIds: [], date});
+      else need('feed', raw, open.length ? `Which feed ran out: ${[...new Set(open.map(g => g.feed))].join(' or ')}?` : 'Which feed ran out? Say for example "finisher bag finished".');
       continue;
     }
-    // deaths
-    if (/\b(died|dead|death|deaths|lost|killed by)\b/.test(s)) {
-      const a = animalOf(s), c = countBefore(s, '[a-z]+');
-      if (!a) { notes.push('Which animals died? Say for example "3 broilers died".'); continue; }
-      const b = pickBatch(a.ent); if (!b) { notes.push(`You have no ${a.word} batch to record deaths in.`); continue; }
-      const cause = (s.match(/\b(heat|cold|sick(?:ness)?|disease|predator|rats?|snakes?|dogs?|cats?|drown(?:ed)?|water|unknown)\b/) || [])[1] || '';
-      actions.push({type: 'death', batchId: b.id, count: c ? c.n : 1, cause: cap(cause), date});
-      if (activeBatches(a.ent).length > 1) notes.push(`I put the deaths in ${b.name}. If they were in another batch, tap Skip and use the Death button.`);
+    // deaths, one or more kinds: "3 broilers and 2 turkeys died"
+    if (/\b(died|dead|death|deaths|lost|killed|kill)\b/.test(s) && !/\b(sold|bought)\b/.test(s)) {
+      const cause = (s.match(/\b(heat|hot|cold|sick(?:ness)?|disease|predator|rats?|snakes?|dogs?|cats?|hawks?|drown(?:ed)?|water|crushed|piling|unknown|stress|cannibalism)\b/) || [])[1] || '';
+      const pairs = [...s.matchAll(new RegExp('(\\d[\\d,]*|\\b(?:' + Object.keys(WORDNUM).join('|') + '))\\s+(?:[a-z-]+\\s+){0,1}?(snails?|catfish|fish(?:es)?|turkeys?|poults?|broilers?|chicks?|chickens?|birds?|fowls?)\\b', 'g'))];
+      const found = pairs.map(m => ({n: WORDNUM[m[1]] || parseFloat(m[1].replace(/,/g, '')), a: animalOf(m[2])})).filter(x => x.a);
+      if (!found.length) {
+        const a = animalOf(s), named = batchIn(s), c = countBefore(s, '[a-z]+') || (s.match(/\b(\d+)\b/) ? {n: +s.match(/\b(\d+)\b/)[1]} : null);
+        const only = activeBatches().length === 1 ? activeBatches()[0] : null, ent = a ? a.ent : named ? named.ent : only ? only.ent : null;
+        if (!ent) { need('animal', raw, 'Which animals died: broilers, turkeys, fish or snails?'); continue; }
+        found.push({n: c ? c.n : 1, a: {ent, word: ent.toLowerCase()}});
+      }
+      found.forEach(f => {
+        const b = pickBatch(f.a.ent, s); if (!b) { notes.push(`You have no ${f.a.word} batch to record deaths in.`); return; }
+        actions.push({type: 'death', batchId: b.id, count: f.n, cause: cap(cause === 'hot' ? 'heat' : cause), date});
+        if (activeBatches(f.a.ent).length > 1 && !batchIn(s, f.a.ent)) notes.push(`I put the ${f.a.ent.toLowerCase()} deaths in ${b.name}. If it was another batch, say "${f.n} died in ${activeBatches(f.a.ent).find(x => x !== b).name}", or tap Skip.`);
+      });
       continue;
+    }
+    // medicine given from the plan
+    if (/\b(gave|given|give|vaccinated|treated|dosed|administered|injected)\b/.test(s) && !cash.some(x => x.money) && !/\bgave me\b/.test(s)) {
+      const planned = S.doses.filter(d => d.status === 'Planned' && d.date <= today());
+      const named = planned.filter(d => { const m = byId('medicines', d.med); return m && m.name.toLowerCase().split(/[^a-z0-9]+/).some(w => w.length >= 4 && s.includes(w)); });
+      const a = animalOf(s), list = (named.length ? named : /\b(medicine|vaccine|drug|dose|meds|vaccinated|treated)\b/.test(s) ? planned : []).filter(d => !a || d.ent === a.ent);
+      if (list.length) { actions.push({type: 'dose_given', doseIds: list.map(d => d.id), date}); continue; }
+      if (/\b(medicine|vaccine|drug|dose|vitamin|vaccinated|treated)\b/.test(s)) { notes.push('I found no planned medicine due now that matches. Plan it in Medication first, then tell me when you give it.'); continue; }
+    }
+    // weights
+    if (/\b(weigh|weighed|weighs|weight|average|avg)\b/.test(s) && /\d\s*(kg|kilos?|g|grams?)\b/.test(s)) {
+      const a = animalOf(s), b = (a && pickBatch(a.ent, s)) || batchIn(s) || (activeBatches().filter(x => x.ent !== 'Snails').length === 1 ? activeBatches().filter(x => x.ent !== 'Snails')[0] : null);
+      if (!b) { need('animal', raw, 'Which batch did you weigh?'); continue; }
+      const w = s.match(/(\d+(?:\.\d+)?)\s*(kg|kilos?|kilograms?|g|grams?)\b/), grams = parseFloat(w[1]) * (/^k/.test(w[2]) ? 1000 : 1);
+      const c = countBefore(s, '(?:snails?|fish(?:es)?|catfish|turkeys?|broilers?|chicks?|chickens?|birds?)'), avg = /\b(average|avg|each|per|weighs)\b/.test(s) || !c ? grams : grams / c.n;
+      actions.push({type: 'weight', batchId: b.id, avg: Math.round(avg), sampleCount: c && avg !== grams ? c.n : '', sampleKg: c && avg !== grams ? grams / 1000 : '', date}); continue;
+    }
+    // salary
+    if (/\b(salary|salaries|wage|wages)\b/.test(s) || (/^(?:i |we )?paid\b/.test(s) && staffIn(s))) {
+      const st = staffIn(s); if (!st) { need('staff', raw, `Whose salary? Your staff: ${S.staff.filter(x => x.active !== 'No').map(x => x.name).join(', ') || 'none added yet. Add them in Staff first'}.`); continue; }
+      const amt = cash.filter(x => x.money); actions.push({type: 'salary', staffId: st.id, amount: amt.length ? amt[amt.length - 1].v : num(st.rate), date}); continue;
+    }
+    // tool returned
+    if (/\b(returned|brought back|gave back|brought (?:the|my) \w+ back|has returned)\b/.test(s)) {
+      const out = S.rentals.filter(r => !r.returned), t = toolIn(s, S.tools.filter(x => out.some(r => r.tool === x.id)));
+      const nm = (s.match(/^([a-z][a-z'\-]*)\s/) || [])[1] || '';
+      const hits = out.filter(r => (!t || r.tool === t.id) && (!nm || NOT_NAME.test(nm) || (r.renter || '').toLowerCase().startsWith(nm) || t));
+      if (hits.length) { actions.push({type: 'rental_return', rentalIds: hits.map(r => r.id), date}); continue; }
+      notes.push(out.length ? `I could not match that to a tool that is out. Out now: ${out.map(r => `${nameOf('tools', r.tool)} with ${r.renter}`).join(', ')}.` : 'No tools are rented out right now.'); continue;
+    }
+    // tool rented out
+    const tool = toolIn(s);
+    if (tool && /\b(rented|rent|hired|hire|borrowed|took|collected|gave)\b/.test(s)) {
+      const subj = (s.match(/^([a-z][a-z'\-]*(?:\s[a-z][a-z'\-]*)?)\s+(?:has\s+)?(?:rented|hired|borrowed|took|collected)\b/) || [])[1];
+      const renter = subj && !NOT_NAME.test(subj.split(' ')[0]) ? knownBuyer(cap(subj)) : knownBuyer(nameAfterTo(s));
+      if (!renter) { need('buyer', raw, `Who rented the ${tool.name}?`); continue; }
+      const q = countBefore(s, '[a-z]+'), qty = q && !/day/.test(q.raw) && q.n < 50 ? q.n : 1;
+      const dm = s.match(/(\d+|one|two|three|four|five|six|seven|ten)\s+days?\b/), days = dm ? (WORDNUM[dm[1]] || +dm[1]) : /\bweek\b/.test(s) ? 7 : 1;
+      const amts = cash.filter(x => !/^\s*(days?|weeks?|[a-z]{3,}s)\b/.test(s.slice(x.idx + x.raw.length)) && (x.money || /\b(for|at)\s*$/.test(s.slice(Math.max(0, x.idx - 5), x.idx))));
+      const amount = amts.length ? (/\b(per day|a day|daily)\b/.test(s) ? amts[amts.length - 1].v * days * qty : amts[amts.length - 1].v) : qty * num(tool.rate) * days;
+      if (!amount) { need('price', raw, `How much is the rent for the ${tool.name}?`); continue; }
+      const notPaid = /\b(not paid|will pay|pay later|owes?|unpaid|later)\b/.test(s), paid = !notPaid && /\b(paid|cash|transfer)\b/.test(s) ? amount : 0;
+      actions.push({type: 'rental', toolId: tool.id, renter, qty, days, amount, paid, date}); continue;
     }
     // someone paid what they owe
-    const pay = s.match(/^([a-z][a-z'\-]*(?:\s[a-z][a-z'\-]*)?)\s+(?:has\s+)?(?:paid|sent|transferred|gave me)\b/);
-    if (pay && !/\b(i|we|me)\b/.test(pay[1]) && money.length && !/\bsold\b/.test(s)) {
-      actions.push({type: 'payment', buyer: knownBuyer(cap(pay[1])), amount: Math.max(...money.map(x => x.v)), date}); continue;
+    const pay = s.match(/^([a-z][a-z'\-]*(?:\s[a-z][a-z'\-]*)?)\s+(?:has\s+)?(?:paid|sent|transferred|gave me|brought)\b/) || s.match(/\b(?:received|collected|got)\s+(?:₦|n)?\s?\d[\d,.]*\s*k?\s+from\s+([a-z][a-z'\-]*)/);
+    if (pay && !NOT_NAME.test(pay[1].split(' ')[0]) && cash.length && !/\bsold\b/.test(s)) {
+      actions.push({type: 'payment', buyer: knownBuyer(cap(pay[1].replace(/\s+(?:just|also|finally)$/, ''))), amount: Math.max(...cash.map(x => x.v)), date}); continue;
     }
+    // "Ada bought 10 snails for 5,500" means you sold them to Ada
+    const buyerFirst = s.match(/^([a-z][a-z'\-]*(?:\s[a-z][a-z'\-]*)?)\s+(?:has\s+)?(?:bought|took|collected|ordered|picked)\s+(.*)$/);
+    if (buyerFirst && !NOT_NAME.test(buyerFirst[1].split(' ')[0]) && (animalOf(buyerFirst[2]) || /\bpacks?\b/.test(buyerFirst[2]))) { s = `sold ${buyerFirst[2]} to ${buyerFirst[1]}`; cash = moneyIn(s); }
     // sales
     if (/\b(sold|sell|sale)\b/.test(s)) {
       const packs = /\bpacks?\b/.test(s), a = animalOf(s), kg = /\d\s*kg\b|\bkg\b|kilo/.test(s);
       const kgm = kg && s.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:kg|kilos?|kilograms?)\b/);
       const cnt = kgm ? {n: parseFloat(kgm[1].replace(/,/g, '')), idx: kgm.index} : countBefore(s, packs ? 'packs?' : '[a-z]+');
-      const prices = money.filter(x => !cnt || x.idx !== cnt.idx).filter(x => !/paid\s*$/.test(s.slice(Math.max(0, x.idx - 6), x.idx))).filter(x => x.money || /\b(for|at)\b/.test(s.slice(Math.max(0, x.idx - 5), x.idx)));
-      if (!prices.length) { notes.push('How much did you sell for? Say for example "sold 10 snails for 5,500".'); continue; }
+      const prices = cash.filter(x => !cnt || x.idx !== cnt.idx).filter(x => !/paid\s*$/.test(s.slice(Math.max(0, x.idx - 6), x.idx)))
+        .filter(x => x.money || /\b(for|at)\s*$/.test(s.slice(Math.max(0, x.idx - 5), x.idx)) || /^\s*(each|per|a piece|apiece)\b/.test(s.slice(x.idx + x.raw.length)));
+      if (!prices.length) { need('price', raw, `How much did you sell ${cnt ? 'them' : 'it'} for? Just type the amount, like 5,500 or 5,500 each.`); continue; }
       const p = prices[prices.length - 1].v, each = /\b(each|per|a piece|apiece|per kg|a kg)\b/.test(s);
       const qty = cnt ? cnt.n : 1, total = each ? p * qty : p;
-      const notPaid = /\b(not paid|hasn'?t paid|has not paid|haven'?t paid|owes?|owing|on credit|will pay|pay later|unpaid|later)\b/.test(s);
+      const notPaid = /\b(not paid|hasn'?t paid|has not paid|haven'?t paid|owes?|owing|on credit|will pay|pay later|unpaid|later|credit)\b/.test(s);
       const partial = (s.match(/\bpaid\s+(₦|n)?\s?(\d[\d,]*(?:\.\d+)?)\s*(k)?/) || null);
-      const paid = notPaid ? 0 : partial ? parseFloat(partial[2].replace(/,/g, '')) * (partial[3] ? 1000 : 1) : total;
+      const paid = partial ? parseFloat(partial[2].replace(/,/g, '')) * (partial[3] ? 1000 : 1) : notPaid ? 0 : total;
       const stock = packs ? S.inventory.find(i => /pack/i.test(i.item) && (!a || i.ent === a.ent)) : null;
-      const ent = a ? a.ent : (stock ? stock.ent : 'General'), b = a && !packs ? pickBatch(ent) : null;
+      const ent = a ? a.ent : (stock ? stock.ent : 'General'), b = a && !packs ? pickBatch(ent, s) : null;
       actions.push({type: 'sale', farm: ent, batchId: b ? b.id : null, item: packs ? (stock ? stock.item : 'Packs') : a ? cap(a.word === 'birds' ? 'broilers' : a.word) : 'Other',
-        animals: !packs && !kg ? qty : null, qty: kg ? qty : qty, unit: packs ? 'packs' : kg ? 'kg' : 'pieces', price: round(total / qty), paid, buyer: knownBuyer(nameAfterTo(s)), date,
+        animals: !packs && !kg ? qty : null, qty, unit: packs ? 'packs' : kg ? 'kg' : 'pieces', price: round(total / qty), paid, buyer: knownBuyer(nameAfterTo(s)), date,
         stockId: stock ? stock.id : null, stockQty: stock ? qty : null});
+      if (stock && qty > num(stock.qty)) notes.push(`You only have ${fmtN(stock.qty)} ${stock.item} in stock, so check the number.`);
       continue;
     }
     // feed bags bought
     if (/\b(bought|buy|got|purchased|paid for)\b/.test(s) && /\bbags?\b/.test(s) && (feedFromText(s) || /\bfeed\b/.test(s))) {
-      const feed = feedFromText(s); if (!feed) { notes.push('Which feed was it? Say for example "bought 2 bags of finisher at 23k each".'); continue; }
+      const feed = feedFromText(s); if (!feed) { need('feed', raw, 'Which feed was it: starter, finisher, or the fish feed name?'); continue; }
       const cnt = countBefore(s, 'bags?'), bags = cnt ? cnt.n : 1;
-      const prices = money.filter(x => !cnt || x.idx !== cnt.idx).filter(x => x.money);
-      if (!prices.length) { notes.push(`How much was each bag of ${feed}?`); continue; }
+      const prices = cash.filter(x => !cnt || x.idx !== cnt.idx).filter(x => x.money);
+      if (!prices.length) { const last = S.bags.filter(g => g.feed === feed).sort((x, y) => (y.bought || '').localeCompare(x.bought || ''))[0]; need('price', raw, `How much was each bag of ${feed}?${last ? ` Last time it was ${money(last.price)}.` : ''}`); continue; }
       const p = prices[prices.length - 1].v, each = /\b(each|per bag|a bag|per)\b/.test(s) || (bags > 1 && p < 40000) || bags === 1;
       actions.push({type: 'feed_bought', feed, bags, pricePerBag: round(each ? p : p / bags), batchIds: batchesForFeed(feed), date}); continue;
     }
     // other spending
-    if (/\b(bought|buy|got|purchased|paid for|paid|spent|spend|cost|fixed|repaired)\b/.test(s) && money.some(x => x.money)) {
-      const amtList = money.filter(x => x.money), cnt = countBefore(s, '[a-z]+');
+    if (/\b(bought|buy|got|purchased|paid for|paid|spent|spend|cost|fixed|repaired|used)\b/.test(s)) {
+      if (!cash.some(x => x.money)) { need('price', raw, 'How much did it cost?'); continue; }
+      const amtList = cash.filter(x => x.money), cnt = countBefore(s, '[a-z]+');
       let amount = amtList[amtList.length - 1].v; if (/\beach\b/.test(s) && cnt) amount *= cnt.n;
-      const cat = /vaccin|drug|medic|vitamin|antibiotic|dewormer|coccid/.test(s) ? 'Medication & vaccines' : /feed/.test(s) ? 'Feed' : /cement|sand|block|wood|zinc|roof|tarpaulin|labour|labor|build|construct|plumb|pipe|tank|net/.test(s) ? 'Setup & construction'
-        : /transport|fuel|petrol|diesel|kerosene|okada|bus|delivery/.test(s) ? 'Fuel & transport' : /light|nepa|electric|water bill|generator/.test(s) ? 'Water & power' : /repair|fix/.test(s) ? 'Repairs & maintenance' : /feeder|drinker|bucket|pail|scale|sieve|board|thermometer|tool/.test(s) ? 'Farm equipment' : 'Other';
+      const cat = /vaccin|drug|medic|vitamin|antibiotic|dewormer|coccid|glucose|multivit/.test(s) ? 'Medication & vaccines' : /feed/.test(s) ? 'Feed' : /cement|sand|block|wood|zinc|roof|tarpaulin|labour|labor|build|construct|plumb|pipe|tank|net|nails?\b|mesh/.test(s) ? 'Setup & construction'
+        : /transport|fuel|petrol|diesel|kerosene|okada|keke|bus|delivery|logistics/.test(s) ? 'Fuel & transport' : /light|nepa|electric|water bill|generator|borehole/.test(s) ? 'Water & power' : /repair|fix/.test(s) ? 'Repairs & maintenance' : /feeder|drinker|bucket|pail|scale|sieve|board|thermometer|tool|bulb|lamp|basin/.test(s) ? 'Farm equipment' : /rent|land|lease/.test(s) ? 'Land & rent' : 'Other';
       const a = animalOf(s);
-      const ent = /\btool ?plug\b|\bhammer|ladder|wheelbarrow|shovel|chair|hose/.test(s) ? 'Tool Plug' : a ? a.ent : /sawdust|charcoal|brood|poultry/.test(s) ? 'Broilers' : 'General';
-      const desc0 = raw.replace(/^.*?\b(bought|buy|got|purchased|paid for|paid|spent|spend)\b\s*/i, '').replace(/\s*\b(for|at|of|on|cost|costing)\b\s*(₦|n)?\s?\d[\d,.]*\s*k?\b.*$/i, '').replace(/^(₦|n)?\s?\d[\d,.]*\s*k?\s*(on|for)\s*/i, '').trim();
-      const desc = desc0.replace(/\s*(₦|n)?\s?\d[\d,.]*\s*k?\s*(each|per\s+\w+)?\s*$/i, '').trim();
-      const birds = /sawdust|charcoal|vitamin|vaccin|brood|drinker|feeder/.test(s) ? activeBatches().filter(b => b.ent === 'Broilers' || b.ent === 'Turkeys').map(b => b.id) : a ? activeBatches(a.ent).map(b => b.id) : [];
-      actions.push({type: 'expense', farm: ent === 'General' && birds.length && !a ? 'Broilers' : ent, category: cat, description: cap(desc.charAt(0)) + desc.slice(1) || cat, amount, batchIds: birds, date}); continue;
+      const ent = /\btool ?plug\b|\bhammer|ladder|wheelbarrow|shovel|chair|hose/.test(s) ? 'Tool Plug' : a ? a.ent : /sawdust|wood shavings|charcoal|brood|poultry/.test(s) ? 'Broilers' : 'General';
+      const desc0 = raw.replace(/^.*?\b(bought|buy|got|purchased|paid for|paid|spent|spend|used)\b\s*/i, '').replace(/\s*\b(for|at|of|on|cost|costing)\b\s*(₦|n)?\s?\d[\d,.]*\s*k?\b.*$/i, '').replace(/^(₦|n)?\s?\d[\d,.]*\s*k?\s*(naira\s*)?(on|for)\s*/i, '').trim();
+      const desc = (desc0.replace(/\s+(₦|n)?\s?\d[\d,.]*\s*(k|naira)?\b.*$/i, '') || desc0).replace(/\s*(₦|n)?\s?\d[\d,.]*\s*k?\s*(naira)?\s*(each|per\s+\w+)?\s*$/i, '').replace(/\s*\b(yesterday|today)\b\s*/i, ' ').trim();
+      const named = batchIn(s), birds = named ? [named.id] : /sawdust|charcoal|vitamin|vaccin|brood|drinker|feeder|glucose/.test(s) ? activeBatches().filter(b => b.ent === 'Broilers' || b.ent === 'Turkeys').map(b => b.id) : a ? activeBatches(a.ent).map(b => b.id) : [];
+      actions.push({type: 'expense', farm: ent === 'General' && birds.length && !a ? (named ? named.ent : 'Broilers') : ent, category: cat, description: cap(desc.charAt(0)) + desc.slice(1) || cat, amount, batchIds: birds, date}); continue;
     }
-    notes.push(`I didn't understand "${raw}". Try: "sold 10 snails for 5,500", "bought 2 bags of finisher at 23k", "3 broilers died", "Mommy paid 20k", or ask "who owes me?".`);
+    notes.push(`I didn't understand "${raw}". Try: "sold 10 snails for 5,500 to Ada", "bought 2 bags of finisher at 23k", "3 broilers died", "Mommy paid 20k", or ask "what's left to do today?".`);
   }
   const reply = [actions.length ? (actions.length === 1 ? 'Here is what I understood. Tap Save if it is right:' : `I found ${actions.length} things. Tap Save on each one that is right:`) : '', ...notes].filter(Boolean).join('\n\n');
-  return {reply: reply || 'Tell me what happened, for example "sold 10 snails for 5,500 to Ada".', actions};
+  return {reply: reply || 'Tell me what happened, for example "sold 10 snails for 5,500 to Ada".', actions, ask: next};
 }
 function describeAction(a) {
   const m = x => money(num(x));
@@ -2689,6 +2890,13 @@ function describeAction(a) {
     case 'death': return {icon: 'minus-circle', title: `${fmtN(a.count)} died in ${esc(nameOf('batches', a.batchId) || '?')}`, sub: `${esc(a.cause || 'Cause not given')} · ${fmtDay(a.date)}`};
     case 'payment': return {icon: 'dollar-sign', title: `${esc(a.buyer)} paid ${m(a.amount)}`, sub: 'Taken off what they owe'};
     case 'task': return {icon: 'check-square', title: `Task: ${esc(a.text)}`, sub: a.due ? 'By ' + fmtDay(a.due) : ''};
+    case 'weight': return {icon: 'trending-up', title: `${esc(nameOf('batches', a.batchId) || '?')} weigh ${fmtW(a.avg)} each`, sub: `${num(a.sampleCount) ? fmtN(a.sampleCount) + ' weighed, ' + a.sampleKg + ' kg in all · ' : ''}${fmtDay(a.date)}`};
+    case 'dose_given': { const ds = (a.doseIds || []).map(id => byId('doses', id)).filter(Boolean);
+      return {icon: 'check-circle', title: `Given: ${esc([...new Set(ds.map(d => (byId('medicines', d.med) || {}).name || 'Medicine'))].join(', '))}`, sub: `${ds.length} planned dose${ds.length === 1 ? '' : 's'} marked as given${ds.some(d => d.batch) ? ' · ' + esc([...new Set(ds.map(d => nameOf('batches', d.batch)).filter(Boolean))].join(', ')) : ''}`}; }
+    case 'salary': return {icon: 'user', title: `Salary: ${esc(nameOf('staff', a.staffId))} ${m(a.amount)}`, sub: `For ${new Date(a.date + 'T00:00').toLocaleDateString(undefined, {month: 'long'})} · ${fmtDay(a.date)}`};
+    case 'rental': return {icon: 'tool', title: `Rented ${fmtN(a.qty)} ${esc(nameOf('tools', a.toolId))} to ${esc(a.renter)}`, sub: `${fmtN(a.days)} day${num(a.days) === 1 ? '' : 's'} · ${m(a.amount)}${num(a.paid) >= num(a.amount) ? ' · paid' : ' · not paid yet'} · back ${fmtDay(addDays(a.date, num(a.days)))}`};
+    case 'rental_return': { const rs = (a.rentalIds || []).map(id => byId('rentals', id)).filter(Boolean);
+      return {icon: 'corner-down-left', title: `Returned: ${esc(rs.map(r => nameOf('tools', r.tool) + ' from ' + r.renter).join(', '))}`, sub: fmtDay(a.date)}; }
   }
   return {icon: 'info', title: 'Something I could not read', sub: ''};
 }
@@ -2705,6 +2913,11 @@ function checkAction(a) {
   if (a.type === 'death') return a.batchId && num(a.count) > 0;
   if (a.type === 'payment') return a.buyer && num(a.amount) > 0;
   if (a.type === 'task') return !!a.text;
+  if (a.type === 'weight') return a.batchId && num(a.avg) > 0;
+  if (a.type === 'dose_given') return (a.doseIds || []).some(id => byId('doses', id));
+  if (a.type === 'salary') return byId('staff', a.staffId) && num(a.amount) > 0;
+  if (a.type === 'rental') return byId('tools', a.toolId) && a.renter && num(a.qty) > 0;
+  if (a.type === 'rental_return') return (a.rentalIds || []).some(id => byId('rentals', id));
   return false;
 }
 function applyAction(a) {
@@ -2737,6 +2950,14 @@ function applyAction(a) {
       return left > 0 ? `Payment saved. ${money(left)} more than they owed` : 'Payment saved';
     }
     case 'task': add('todos', {text: a.text, ent: 'General', due: a.due || '', notes: '', done: false}); return 'Task added';
+    case 'weight': add('weights', {date: a.date, batch: a.batchId, sampleCount: a.sampleCount || '', sampleKg: a.sampleKg || '', avg: num(a.avg), notes: 'Added by chat'}); return 'Weight saved';
+    case 'dose_given': a.doseIds.forEach(id => giveDose(id, true)); return 'Marked as given';
+    case 'salary': { const st = byId('staff', a.staffId);
+      add('payroll', {date: a.date, staff: st.id, period: a.date.slice(0, 7), payType: st.payType || 'Monthly', rate: num(st.rate), days: '', base: num(a.amount), bonus: '', deduct: '', net: num(a.amount), method: 'Cash', notes: 'Added by chat'}); return 'Salary saved'; }
+    case 'rental': { const t = byId('tools', a.toolId);
+      add('rentals', {renter: a.renter, phone: '', tool: t.id, qty: num(a.qty), dateOut: a.date, due: addDays(a.date, num(a.days)), returned: '', days: num(a.days), rate: num(t.rate), amount: num(a.amount), paid: num(a.paid), deposit: '', notes: 'Added by chat'});
+      return toolStats(t).avail < 0 ? `Saved, but you only own ${fmtN(t.qty)}` : 'Rental saved'; }
+    case 'rental_return': a.rentalIds.forEach(id => { const r = byId('rentals', id); if (r && !r.returned) r.returned = a.date; }); return 'Marked as returned';
   }
 }
 function farmContext() {
@@ -2776,7 +2997,8 @@ async function sendChat(text) {
   text = String(text || '').trim(); if (!text || chatBusy) return;
   if (!SAMPLE) {
     CHAT.push({role: 'me', text});
-    let res; try { res = parseEntry(text); } catch (e) { res = {reply: 'Sorry, something went wrong reading that. Try saying it another way.', actions: []}; }
+    let res; try { res = parseEntry(text, chatAsk); } catch (e) { res = {reply: 'Sorry, something went wrong reading that. Try saying it another way.', actions: []}; }
+    chatAsk = res.ask || null;
     const acts = (res.actions || []).filter(checkAction).map(a => ({...a, status: 'pending'}));
     CHAT.push({role: 'ai', text: res.reply, actions: acts}); saveChat();
     if (ROUTE !== 'chat') go('chat'); else render();
