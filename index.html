@@ -2526,15 +2526,158 @@ const CHAT_KEY = 'zimsAgro.chat';
 let CHAT = (() => { try { return JSON.parse(localStorage.getItem(CHAT_KEY)) || []; } catch (e) { return []; } })();
 let chatBusy = null;
 const saveChat = () => { try { localStorage.setItem(CHAT_KEY, JSON.stringify(CHAT.slice(-40))); } catch (e) {} };
-const EXAMPLES = ['Sold 10 snails for 5,500 to Ada', 'Bought 2 bags of finisher at 23k each', '3 broilers died this morning', 'Mom paid 20k', 'How much have I spent on feed?'];
+const EXAMPLES = ['Sold 10 snails for 5,500 to Ada', 'Bought 2 bags of finisher at 23k each', 'Finisher bag finished', '3 broilers died', 'Mommy paid 20k', 'Who owes me?', 'How much have I spent on feed?'];
 function askCard() {
-  if (!SAMPLE && !SAMPLE_OFF && !window.claude) return '';
   if (SAMPLE_OFF) return '';
   return `<section class="askcard">
-    <div class="ask-head"><span class="ico">${I('message-circle', 20)}</span><div><b>Tell the app what happened</b><small>Type it like a text message. You check it before it's saved.</small></div></div>
+    <div class="ask-head"><span class="ico">${I('message-circle', 20)}</span><div><b>Tell the app what happened</b><small>Type it like a text message. You check it before it's saved. Free, works offline.</small></div></div>
     <form class="askform" data-chatform><input name="q" placeholder="e.g. Sold 10 snails for 5,500 to Ada" autocomplete="off" aria-label="Tell the app"><button class="btn btn-dark" aria-label="Send">${I('send', 18)}</button></form>
     <div class="exchips">${EXAMPLES.map(x => `<button type="button" data-act="chatEx" data-v="${esc(x)}">${esc(x)}</button>`).join('')}</div>
   </section>`;
+}
+/* ============ free, built-in assistant: reads plain sentences, no AI service ============ */
+const ANIMALS = [[/\bsnails?\b/, 'Snails', 'snails'], [/\b(cat)?fish(es)?\b/, 'Catfish', 'fish'], [/\bturkeys?\b|\bpoults?\b/, 'Turkeys', 'turkeys'], [/\bbroilers?\b|\bchicks?\b|\bchickens?\b|\bbirds?\b|\bfowls?\b/, 'Broilers', 'birds']];
+const WORDNUM = {one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, twenty: 20, a: 1, an: 1};
+function moneyIn(s) {
+  // every amount in the sentence: "5,500", "5k", "N23k", "1.5m", "23000"
+  const out = [];
+  s.replace(/(₦|ngn|naira|n)?\s?(\d[\d,]*(?:\.\d+)?)\s*(k|thousand|m|million)?\b/g, (m, cur, n, unit, idx) => {
+    let v = parseFloat(n.replace(/,/g, '')); if (isNaN(v)) return m;
+    if (unit === 'k' || unit === 'thousand') v *= 1000; if (unit === 'm' || unit === 'million') v *= 1e6;
+    out.push({v, idx, money: !!(cur || unit) || v >= 1000, raw: m}); return m;
+  });
+  return out;
+}
+function countBefore(s, wordRe) {
+  const m = s.match(new RegExp('(\\d[\\d,]*|' + Object.keys(WORDNUM).join('|') + ')\\s+(?:[a-z-]+\\s+){0,2}?(' + wordRe + ')'));
+  if (!m) return null; const n = m[1].replace(/,/g, '');
+  return {n: WORDNUM[n] || parseFloat(n), idx: m.index, raw: m[0]};
+}
+function whenOf(s) { return /\byesterday\b/.test(s) ? addDays(today(), -1) : /\b(\d+)\s+days?\s+ago\b/.test(s) ? addDays(today(), -+s.match(/\b(\d+)\s+days?\s+ago\b/)[1]) : today(); }
+function animalOf(s) { for (const [re, ent, word] of ANIMALS) if (re.test(s)) return {ent, word}; return null; }
+function pickBatch(ent) {
+  const bs = activeBatches(ent).map(b => ({b, n: batchStats(b).current})).sort((x, y) => y.n - x.n);
+  return bs.length ? bs[0].b : null;
+}
+function cap(w) { return w.replace(/\b[a-z]/g, c => c.toUpperCase()); }
+function nameAfterTo(s) {
+  const m = s.match(/\bto\s+(?:my\s+|the\s+|a\s+)?([a-z][a-z'\-]*(?:\s+[a-z][a-z'\-]*)?)/);
+  if (!m) return '';
+  const stop = /\b(for|at|and|on|yesterday|today|this|last|each|not|but|who|she|he|they|pay|paid|owes?|with|from|in)\b.*$/;
+  return cap(m[1].replace(stop, '').trim());
+}
+function knownBuyer(name) {
+  const n = name.toLowerCase(); if (!n) return '';
+  const all = [...new Set(S.sales.map(x => (x.buyer || '').trim()).filter(Boolean))];
+  return all.find(b => b.toLowerCase() === n) || all.find(b => b.toLowerCase().startsWith(n) || n.startsWith(b.toLowerCase())) || name;
+}
+function feedFromText(s) {
+  const names = [...new Set([...S.bags.map(g => g.feed), ...feedChoices([])])];
+  const key = /starter/.test(s) ? 'starter' : /finisher/.test(s) ? 'finisher' : /aller/.test(s) ? 'aller' : /new\s*hope/.test(s) ? 'new hope' : /blue\s*crown/.test(s) ? 'blue crown' : '';
+  if (!key) return '';
+  const mm = (s.match(/(\d(?:\.\d)?)\s*mm/) || [])[1];
+  const hits = names.filter(n => n.toLowerCase().includes(key));
+  return (mm && hits.find(n => n.includes(mm + ' mm'))) || hits[0] || cap(key + (mm ? ' ' + mm + ' mm' : ''));
+}
+function batchesForFeed(feed) {
+  const f = feed.toLowerCase();
+  const fish = /aller|hope|crown|mm/.test(f);
+  return activeBatches().filter(b => fish ? b.ent === 'Catfish' : (b.ent === 'Broilers' || b.ent === 'Turkeys')).filter(b => {
+    if (fish) return true; const d = dayOfAge(b, today()) || 0; return /starter/.test(f) ? d <= 21 : /finisher/.test(f) ? d > 21 : true; }).map(b => b.id);
+}
+function answerQuestion(s) {
+  const m = money3('month');
+  if (/feed/.test(s)) { const spent = sum(S.bags, 'price'), store = S.bags.filter(g => !g.opened).length, use = S.bags.filter(g => g.opened && !g.finished).map(g => g.feed);
+    return `You have bought ${S.bags.length} bag${S.bags.length === 1 ? '' : 's'} of feed for ${money(spent)}. ${use.length ? 'In use now: ' + use.join(', ') + '. ' : ''}${store} still in the store.`; }
+  if (/\bowe|owing|debt|credit|not paid|unpaid/.test(s)) { const l = buyerList().filter(o => o.owe > 0);
+    return l.length ? 'These people owe you: ' + l.map(o => `${o.name} ${money(o.owe)}`).join(', ') + `. Total ${money(sum(l, 'owe'))}.` : 'Nobody owes you anything right now.'; }
+  const a = animalOf(s);
+  if (a && /sell|price|charge|cost/.test(s)) { const bs = activeBatches(a.ent); if (!bs.length) return `You have no ${a.word} batches right now.`;
+    return bs.map(b => { const st = batchStats(b), tot = st.purchase + st.feedCost + st.medCost + st.otherCost, kept = st.current + st.sold + num(b.processed), each = kept ? tot / kept : 0;
+      return `${b.name}: each costs you about ${money(Math.round(each))}. Sell at ${money(Math.round(each * 1.3))} or more for 30% profit.`; }).join(' '); }
+  if (a) { const bs = activeBatches(a.ent); return bs.length ? bs.map(b => `${b.name}: ${fmtN(batchStats(b).current)} alive`).join(', ') + '.' : `You have no ${a.word} right now.`; }
+  if (/profit|made|money|spent|spend|income/.test(s)) return `This month: ${money(m.i)} in, ${money(m.o)} out, so ${m.p >= 0 ? 'a profit of ' + money(m.p) : 'a loss of ' + money(-m.p)}. People owe you ${money(owedTotal())}.`;
+  return 'I can answer: how much you spent on feed, who owes you, how many animals you have, or what to sell them for.';
+}
+function parseEntry(text) {
+  const parts = String(text).split(/[\n.;]+|\band then\b|\balso\b/i).map(x => x.trim()).filter(Boolean);
+  const actions = [], notes = [];
+  for (const raw of parts) {
+    const s = raw.toLowerCase().replace(/[’']/g, "'");
+    const date = whenOf(s), money = moneyIn(s);
+    const isQ = /\?$/.test(raw.trim()) || /^(how|what|who|when|which|do|does|did|is|are)\b/.test(s);
+    if (isQ) { notes.push(answerQuestion(s)); continue; }
+    // task
+    if (/\b(remind me|reminder|to ?do|need to|have to|don'?t forget|remember to)\b/.test(s)) {
+      const t = raw.replace(/^.*?\b(remind me to|remind me|reminder to|reminder|todo|to do|need to|have to|don'?t forget to|don'?t forget|remember to)\b\s*/i, '').replace(/\b(tomorrow|today|next week)\b/i, '').trim();
+      actions.push({type: 'task', text: cap(t.charAt(0)) + t.slice(1), due: /tomorrow/.test(s) ? addDays(today(), 1) : /next week/.test(s) ? addDays(today(), 7) : /today/.test(s) ? today() : null}); continue;
+    }
+    // a bag ran out
+    if (/\b(finished|ran out|run out|is empty|used up|exhausted|done)\b/.test(s) && /\b(bag|feed|starter|finisher|aller|hope|crown)\b/.test(s)) {
+      const feed = feedFromText(s) || (unfinishedBags()[0] || {}).feed;
+      if (feed) actions.push({type: 'bag_finished', feed, batchIds: [], date}); else notes.push('Which feed ran out? Say for example "finisher bag finished".');
+      continue;
+    }
+    // deaths
+    if (/\b(died|dead|death|deaths|lost|killed by)\b/.test(s)) {
+      const a = animalOf(s), c = countBefore(s, '[a-z]+');
+      if (!a) { notes.push('Which animals died? Say for example "3 broilers died".'); continue; }
+      const b = pickBatch(a.ent); if (!b) { notes.push(`You have no ${a.word} batch to record deaths in.`); continue; }
+      const cause = (s.match(/\b(heat|cold|sick(?:ness)?|disease|predator|rats?|snakes?|dogs?|cats?|drown(?:ed)?|water|unknown)\b/) || [])[1] || '';
+      actions.push({type: 'death', batchId: b.id, count: c ? c.n : 1, cause: cap(cause), date});
+      if (activeBatches(a.ent).length > 1) notes.push(`I put the deaths in ${b.name}. If they were in another batch, tap Skip and use the Death button.`);
+      continue;
+    }
+    // someone paid what they owe
+    const pay = s.match(/^([a-z][a-z'\-]*(?:\s[a-z][a-z'\-]*)?)\s+(?:has\s+)?(?:paid|sent|transferred|gave me)\b/);
+    if (pay && !/\b(i|we|me)\b/.test(pay[1]) && money.length && !/\bsold\b/.test(s)) {
+      actions.push({type: 'payment', buyer: knownBuyer(cap(pay[1])), amount: Math.max(...money.map(x => x.v)), date}); continue;
+    }
+    // sales
+    if (/\b(sold|sell|sale)\b/.test(s)) {
+      const packs = /\bpacks?\b/.test(s), a = animalOf(s), kg = /\d\s*kg\b|\bkg\b|kilo/.test(s);
+      const kgm = kg && s.match(/(\d[\d,]*(?:\.\d+)?)\s*(?:kg|kilos?|kilograms?)\b/);
+      const cnt = kgm ? {n: parseFloat(kgm[1].replace(/,/g, '')), idx: kgm.index} : countBefore(s, packs ? 'packs?' : '[a-z]+');
+      const prices = money.filter(x => !cnt || x.idx !== cnt.idx).filter(x => !/paid\s*$/.test(s.slice(Math.max(0, x.idx - 6), x.idx))).filter(x => x.money || /\b(for|at)\b/.test(s.slice(Math.max(0, x.idx - 5), x.idx)));
+      if (!prices.length) { notes.push('How much did you sell for? Say for example "sold 10 snails for 5,500".'); continue; }
+      const p = prices[prices.length - 1].v, each = /\b(each|per|a piece|apiece|per kg|a kg)\b/.test(s);
+      const qty = cnt ? cnt.n : 1, total = each ? p * qty : p;
+      const notPaid = /\b(not paid|hasn'?t paid|has not paid|haven'?t paid|owes?|owing|on credit|will pay|pay later|unpaid|later)\b/.test(s);
+      const partial = (s.match(/\bpaid\s+(₦|n)?\s?(\d[\d,]*(?:\.\d+)?)\s*(k)?/) || null);
+      const paid = notPaid ? 0 : partial ? parseFloat(partial[2].replace(/,/g, '')) * (partial[3] ? 1000 : 1) : total;
+      const stock = packs ? S.inventory.find(i => /pack/i.test(i.item) && (!a || i.ent === a.ent)) : null;
+      const ent = a ? a.ent : (stock ? stock.ent : 'General'), b = a && !packs ? pickBatch(ent) : null;
+      actions.push({type: 'sale', farm: ent, batchId: b ? b.id : null, item: packs ? (stock ? stock.item : 'Packs') : a ? cap(a.word === 'birds' ? 'broilers' : a.word) : 'Other',
+        animals: !packs && !kg ? qty : null, qty: kg ? qty : qty, unit: packs ? 'packs' : kg ? 'kg' : 'pieces', price: round(total / qty), paid, buyer: knownBuyer(nameAfterTo(s)), date,
+        stockId: stock ? stock.id : null, stockQty: stock ? qty : null});
+      continue;
+    }
+    // feed bags bought
+    if (/\b(bought|buy|got|purchased|paid for)\b/.test(s) && /\bbags?\b/.test(s) && (feedFromText(s) || /\bfeed\b/.test(s))) {
+      const feed = feedFromText(s); if (!feed) { notes.push('Which feed was it? Say for example "bought 2 bags of finisher at 23k each".'); continue; }
+      const cnt = countBefore(s, 'bags?'), bags = cnt ? cnt.n : 1;
+      const prices = money.filter(x => !cnt || x.idx !== cnt.idx).filter(x => x.money);
+      if (!prices.length) { notes.push(`How much was each bag of ${feed}?`); continue; }
+      const p = prices[prices.length - 1].v, each = /\b(each|per bag|a bag|per)\b/.test(s) || (bags > 1 && p < 40000) || bags === 1;
+      actions.push({type: 'feed_bought', feed, bags, pricePerBag: round(each ? p : p / bags), batchIds: batchesForFeed(feed), date}); continue;
+    }
+    // other spending
+    if (/\b(bought|buy|got|purchased|paid for|paid|spent|spend|cost|fixed|repaired)\b/.test(s) && money.some(x => x.money)) {
+      const amtList = money.filter(x => x.money), cnt = countBefore(s, '[a-z]+');
+      let amount = amtList[amtList.length - 1].v; if (/\beach\b/.test(s) && cnt) amount *= cnt.n;
+      const cat = /vaccin|drug|medic|vitamin|antibiotic|dewormer|coccid/.test(s) ? 'Medication & vaccines' : /feed/.test(s) ? 'Feed' : /cement|sand|block|wood|zinc|roof|tarpaulin|labour|labor|build|construct|plumb|pipe|tank|net/.test(s) ? 'Setup & construction'
+        : /transport|fuel|petrol|diesel|kerosene|okada|bus|delivery/.test(s) ? 'Fuel & transport' : /light|nepa|electric|water bill|generator/.test(s) ? 'Water & power' : /repair|fix/.test(s) ? 'Repairs & maintenance' : /feeder|drinker|bucket|pail|scale|sieve|board|thermometer|tool/.test(s) ? 'Farm equipment' : 'Other';
+      const a = animalOf(s);
+      const ent = /\btool ?plug\b|\bhammer|ladder|wheelbarrow|shovel|chair|hose/.test(s) ? 'Tool Plug' : a ? a.ent : /sawdust|charcoal|brood|poultry/.test(s) ? 'Broilers' : 'General';
+      const desc0 = raw.replace(/^.*?\b(bought|buy|got|purchased|paid for|paid|spent|spend)\b\s*/i, '').replace(/\s*\b(for|at|of|on|cost|costing)\b\s*(₦|n)?\s?\d[\d,.]*\s*k?\b.*$/i, '').replace(/^(₦|n)?\s?\d[\d,.]*\s*k?\s*(on|for)\s*/i, '').trim();
+      const desc = desc0.replace(/\s*(₦|n)?\s?\d[\d,.]*\s*k?\s*(each|per\s+\w+)?\s*$/i, '').trim();
+      const birds = /sawdust|charcoal|vitamin|vaccin|brood|drinker|feeder/.test(s) ? activeBatches().filter(b => b.ent === 'Broilers' || b.ent === 'Turkeys').map(b => b.id) : a ? activeBatches(a.ent).map(b => b.id) : [];
+      actions.push({type: 'expense', farm: ent === 'General' && birds.length && !a ? 'Broilers' : ent, category: cat, description: cap(desc.charAt(0)) + desc.slice(1) || cat, amount, batchIds: birds, date}); continue;
+    }
+    notes.push(`I didn't understand "${raw}". Try: "sold 10 snails for 5,500", "bought 2 bags of finisher at 23k", "3 broilers died", "Mommy paid 20k", or ask "who owes me?".`);
+  }
+  const reply = [actions.length ? (actions.length === 1 ? 'Here is what I understood. Tap Save if it is right:' : `I found ${actions.length} things. Tap Save on each one that is right:`) : '', ...notes].filter(Boolean).join('\n\n');
+  return {reply: reply || 'Tell me what happened, for example "sold 10 snails for 5,500 to Ada".', actions};
 }
 function describeAction(a) {
   const m = x => money(num(x));
@@ -2631,7 +2774,15 @@ Farmer: ${text}`;
 }
 async function sendChat(text) {
   text = String(text || '').trim(); if (!text || chatBusy) return;
-  if (!SAMPLE) { toast('The chat only works in the online app', 'info'); return; }
+  if (!SAMPLE) {
+    CHAT.push({role: 'me', text});
+    let res; try { res = parseEntry(text); } catch (e) { res = {reply: 'Sorry, something went wrong reading that. Try saying it another way.', actions: []}; }
+    const acts = (res.actions || []).filter(checkAction).map(a => ({...a, status: 'pending'}));
+    CHAT.push({role: 'ai', text: res.reply, actions: acts}); saveChat();
+    if (ROUTE !== 'chat') go('chat'); else render();
+    setTimeout(() => window.scrollTo(0, document.body.scrollHeight), 50);
+    return;
+  }
   CHAT.push({role: 'me', text}); saveChat();
   chatBusy = new AbortController(); if (ROUTE !== 'chat') go('chat'); else render();
   try {
@@ -2659,7 +2810,7 @@ function viewChat() {
       ${msgs}
       ${chatBusy ? `<div class="msg ai thinking">Thinking…</div><div><button class="btn btn-ghost btn-sm" data-act="chatStop">Stop</button></div>` : ''}
     </div>
-    <div class="chatbar"><form class="askform" data-chatform><input name="q" placeholder="${SAMPLE ? 'Type what happened…' : 'The chat works in the online app'}" autocomplete="off" aria-label="Message" ${SAMPLE ? '' : 'disabled'}><button class="btn btn-dark" aria-label="Send" ${SAMPLE && !chatBusy ? '' : 'disabled'}>${I('send', 18)}</button></form></div>`;
+    <div class="chatbar"><form class="askform" data-chatform><input name="q" placeholder="Type what happened…" autocomplete="off" aria-label="Message"><button class="btn btn-dark" aria-label="Send" ${chatBusy ? 'disabled' : ''}>${I('send', 18)}</button></form></div>`;
 }
 document.addEventListener('submit', e => {
   const f = e.target.closest('[data-chatform]'); if (!f) return;
