@@ -1,0 +1,4 @@
+# Never commit farm records or backups
+*backup*.json
+.DS_Store
+.vercel
