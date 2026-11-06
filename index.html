@@ -1146,7 +1146,7 @@ function ledger() {
   S.batches.forEach(b => { const a = num(b.qty) * num(b.unitCost); if (a) L.push({date: b.start, ent: b.ent, dir: 'out', cat: 'Livestock purchase', desc: b.name, amount: a}); });
   S.payroll.forEach(p => { const s = byId('staff', p.staff); L.push({date: p.date, ent: s?.ent || 'General', dir: 'out', cat: 'Salaries & wages', desc: (s?.name || 'Staff') + (p.period ? ' – ' + monthName(p.period) : ''), amount: num(p.net)}); });
   S.tools.forEach(t => { const a = num(t.qty) * num(t.unitCost); if (a) L.push({date: t.bought, ent: 'Tool Plug', dir: 'out', cat: 'Tool purchase', desc: fmtN(t.qty) + ' × ' + t.name, amount: a}); });
-  S.sales.forEach(s => L.push({date: s.date, ent: s.ent, dir: 'in', cat: 'Sales', desc: s.item + (s.buyer ? ' to ' + s.buyer : ''), amount: num(s.total)}));
+  S.sales.forEach(s => L.push({date: s.date, ent: s.ent, dir: 'in', cat: 'Sales', desc: s.item + (s.buyer ? ' to ' + s.buyer : ''), amount: num(s.total), col: 'sales', id: s.id}));
   S.rentals.forEach(r => L.push({date: r.dateOut, ent: 'Tool Plug', dir: 'in', cat: 'Rental income', desc: nameOf('tools', r.tool) + ' to ' + r.renter, amount: num(r.amount)}));
   return L.sort((a, b) => (b.date || '').localeCompare(a.date || ''));
 }
@@ -1646,7 +1646,7 @@ function viewMoney() {
     <div class="hero-split"><div><span>Money in</span><b>${money(m.i)}</b></div><div><span>Money out</span><b>${money(m.o)}</b></div><div><span>Owed to you</span><b>${money(owedTotal())}</b></div></div>
     ${periodPicker()}
   </section>
-  <div class="qrow">${qbtn('sale', {}, true)}${qbtn('expense')}${qbtn('pay')}<button class="qbtn" data-act="ledgerCsv"><span class="qi">${I('download', 20)}</span>Download</button></div>
+  <div class="qrow">${qbtn('sale', {}, true)}<button class="qbtn" data-act="go" data-to="more/sales"><span class="qi">${I('list', 20)}</span>All sales</button>${qbtn('expense')}${qbtn('pay')}<button class="qbtn" data-act="ledgerCsv"><span class="qi">${I('download', 20)}</span>Download</button></div>
   <div class="two">
     <section>${sec('Each farm')}<div class="box">${ents.length ? `<div class="hbars">${ents.map(r => `<div class="hbar"><span>${farm(r.e)}</span><div class="bars"><i style="width:${r.i / mx * 100}%;background:var(--gold)"></i><i style="width:${r.o / mx * 100}%;background:var(--ink)"></i></div><div class="v ${r.i - r.o >= 0 ? 'pos' : 'neg'}">${money(r.i - r.o)}<small>${money(r.i)} in · ${money(r.o)} out</small></div></div>`).join('')}</div>
       <div class="legend"><span><i style="background:var(--gold)"></i>Money in</span><span><i style="background:var(--ink)"></i>Money out</span></div>` : `<p class="mute" style="margin:0">No money recorded ${pl}.</p>`}</div></section>
@@ -1657,7 +1657,7 @@ function viewMoney() {
   </div>
   ${owing.length ? `<section>${sec(`Owed to you <small>${money(sum(owing, 'bal'))}</small>`)}<div class="list">${owing.map(o => ri({icon: 'user', ic: 'warn', title: esc(o.who), sub: `${esc(o.what)} · ${fmtDay(o.r.date || o.r.dateOut)}${o.r.phone ? ' · ' + esc(o.r.phone) : ''}`, right: `<span class="neg">${money(o.bal)}</span><button class="btn btn-sm btn-ghost" data-act="${o.act}" data-id="${o.r.id}">Paid</button>`, attrs: editAttrs(o.col, o.r.id)})).join('')}</div></section>` : ''}
   <section>${sec('Activity', `<div class="seg">${['', ...ENTS].map(e => `<button class="${mf === e ? 'on' : ''}" data-act="mf" data-v="${e}">${e || 'All'}</button>`).join('')}</div>`)}
-    ${shown.length ? `<div class="list">${shown.map(x => ri({icon: x.dir === 'in' ? 'arrow-down-left' : 'arrow-up-right', ic: x.dir === 'in' ? 'gold' : '', title: esc(x.desc || x.cat), sub: `${farm(x.ent)} · ${esc(x.cat)} · ${fmtDay(x.date)}`, right: x.dir === 'in' ? `<span class="pos">+${money(x.amount)}</span>` : `-${money(x.amount)}`})).join('')}</div>
+    ${shown.length ? `<div class="list">${shown.map(x => ri({icon: x.dir === 'in' ? 'arrow-down-left' : 'arrow-up-right', ic: x.dir === 'in' ? 'gold' : '', title: esc(x.desc || x.cat), sub: `${farm(x.ent)} · ${esc(x.cat)} · ${fmtDay(x.date)}`, right: x.dir === 'in' ? `<span class="pos">+${money(x.amount)}</span>` : `-${money(x.amount)}`, attrs: x.col ? editAttrs(x.col, x.id) : ''})).join('')}</div>
       ${L.length > shown.length ? `<div style="margin-top:12px"><button class="btn btn-ghost" data-act="moneyMore">Show all ${L.length}</button></div>` : ''}` : empty('Nothing in this period.', 'dollar-sign')}</section>
   ${monthReport()}
   ${topBuyers()}
@@ -1671,6 +1671,7 @@ function viewMoney() {
 
 /* ============ more ============ */
 const MORE = [
+  ['sales', 'Sales history', 'shopping-bag', () => { const o = sum(S.sales, r => Math.max(0, num(r.total) - num(r.paid))); return `${S.sales.length} sale${S.sales.length === 1 ? '' : 's'}${o ? ' · ' + money(o) + ' owed' : ''}`; }],
   ['money', 'Money & reports', 'dollar-sign', () => 'Money in and out, monthly report, staff'],
   ['buyers', 'Buyers', 'users', () => { const n = buyerList().length; return n ? `${n} buyer${n === 1 ? '' : 's'}` : 'Saved from your sales'; }],
   ['shopping', 'Shopping list', 'shopping-cart', () => { const n = shoppingItems().length; return n ? `${n} to buy` : 'Nothing to buy'; }],
@@ -1686,7 +1687,31 @@ function viewMore(s) {
   if (s && MORE.some(m => m[0] === s)) return back('#/more', 'More') + `<div class="stack">${MORE_VIEWS[s]()}</div>`;
   return `<div class="stack"><section>${sec('More')}<div class="list">${MORE.map(([k, l, ic, sub]) => ri({icon: ic, title: l, sub: sub(), right: I('chevron-right', 18), attrs: `data-act="go" data-to="more/${k}"`})).join('')}</div></section></div>`;
 }
+/* one sale in plain words: what, how it was priced, and whether it is paid */
+function saleRow(s) {
+  const bal = num(s.total) - num(s.paid), heads = num(s.heads), w = wordOf(s.ent);
+  const what = heads ? `${fmtN(heads)} ${heads === 1 && w !== 'fish' ? w.replace(/s$/, '') : w}` : `${fmtN(s.qty)} ${esc(s.unit || '')} ${esc(s.item || '')}`;
+  const how = s.unit === 'kg' ? `${fmtN(s.qty)} kg at ${money(s.price)} per kg` : s.unit === 'pieces' ? `${money(s.price)} each` : s.unit === 'lot' ? 'One total price' : `${fmtN(s.qty)} ${esc(s.unit || '')} at ${money(s.price)} each`;
+  return ri({icon: 'shopping-bag', ic: bal > 0 ? 'warn' : 'gold', title: `${what}${s.buyer ? ' to ' + esc(s.buyer) : ''}`,
+    sub: `${fmtDay(s.date)} · ${num(s.total) ? how : 'Free / gift'}${s.notes ? ' · ' + esc(s.notes) : ''}`,
+    right: `<span style="text-align:right"><b>${money(s.total)}</b><small style="display:block;font-size:12px">${bal > 0 ? `<span class="neg">owes ${money(bal)}</span>` : '<span class="mute">paid</span>'}</small></span>${I('edit-2', 15)}`,
+    attrs: editAttrs('sales', s.id)});
+}
 const MORE_VIEWS = {
+  sales() {
+    const f = UI.salesEnt || '', owingOnly = UI.salesOwing;
+    const all = S.sales.filter(s => !f || s.ent === f), list = all.filter(s => !owingOnly || num(s.total) > num(s.paid)).sort((a, b) => (b.date || '').localeCompare(a.date || '') || (b.created || 0) - (a.created || 0));
+    const months = {}; list.forEach(s => (months[(s.date || '').slice(0, 7)] = months[(s.date || '').slice(0, 7)] || []).push(s));
+    const got = sum(all, r => Math.min(num(r.paid), num(r.total))), owed = sum(all, r => Math.max(0, num(r.total) - num(r.paid)));
+    const ents = [...new Set(S.sales.map(s => s.ent).filter(Boolean))];
+    return `<section>${sec('Sales history', `<button class="btn btn-primary btn-sm" data-act="q" data-q="sale" data-preset="${esc(JSON.stringify(f ? {ent: f} : {}))}">${I('plus', 15)}Record sale</button>`)}
+      <div class="tiles">${tile('Sold', money(sum(all, 'total')))}${tile('Money received', money(got), 'pos')}${tile('Still owed', money(owed), owed ? 'neg' : '')}</div>
+      <p class="note" style="margin-top:14px">${I('info', 17)}<span>Tap any sale to change it or delete it.</span></p></section>
+      <section><div class="seg">${['', ...ents].map(e => `<button class="${f === e ? 'on' : ''}" data-act="salesEnt" data-v="${e}">${e || 'All'}</button>`).join('')}</div>
+        <div class="seg" style="margin-top:8px"><button class="${owingOnly ? '' : 'on'}" data-act="salesOwing" data-v="">All sales</button><button class="${owingOnly ? 'on' : ''}" data-act="salesOwing" data-v="1">Not paid yet</button></div></section>
+      ${list.length ? Object.keys(months).map(ym => `<section>${sec(`${ym ? monthLong(ym) : 'No date'} <small>${money(sum(months[ym], 'total'))}</small>`)}<div class="list">${months[ym].map(saleRow).join('')}</div></section>`).join('')
+        : `<section>${empty(owingOnly ? 'Nobody owes you for a sale.' : 'No sales yet.', 'shopping-bag')}</section>`}`;
+  },
   money: () => viewMoney(),
   shopping() {
     const toBuy = shoppingItems(), groups = {};
@@ -1771,36 +1796,61 @@ const QT = {
   pick: {t: 'What do you want to record?', icon: 'plus', noSave: true,
     body: () => `<div class="pick-grid">${Object.entries(QT_META).map(([k, [l, ic, d]]) => `<button type="button" class="pick" data-act="q" data-q="${k}" data-preset="{}"><span class="qi">${I(ic, 20)}</span><span><b>${l}</b><small>${d}</small></span></button>`).join('')}</div>`},
   sale: {
-    t: 'Record a sale', icon: 'shopping-bag',
-    init: p => { const b = byId('batches', p.batch); const ent = p.ent || (b && b.ent) || 'Catfish'; return {ent, batch: p.batch || '', item: SALE_ITEM[ent], heads: '', by: ent === 'Catfish' ? 'kg' : 'pieces', qty: '', price: '', pay: 'full', paid: '', buyer: '', date: today()}; },
+    t: v => v.id ? 'Change this sale' : 'Record a sale', icon: 'shopping-bag',
+    init: p => {
+      const r = p.id && byId('sales', p.id);
+      if (r) {
+        const total = num(r.total), paid = num(r.paid);
+        const by = ['pieces', 'kg', 'lot', 'crates'].includes(r.unit) ? r.unit : 'lot';
+        return {id: r.id, ent: r.ent || 'General', batch: r.batch || '', item: r.item || '', heads: num(r.heads) || (by === 'pieces' ? num(r.qty) : ''), by,
+          qty: by === 'lot' ? 1 : num(r.qty), price: by === 'lot' ? total : num(r.price), pay: paid >= total ? 'full' : paid > 0 ? 'part' : 'none', paid: paid || '',
+          buyer: r.buyer || '', phone: r.phone || '', notes: r.notes || '', date: r.date || today()};
+      }
+      const b = byId('batches', p.batch); const ent = p.ent || (b && b.ent) || 'Catfish';
+      return {ent, batch: p.batch || '', item: SALE_ITEM[ent], heads: '', by: ent === 'Catfish' ? 'kg' : 'pieces', qty: '', price: '', pay: 'full', paid: '', buyer: '', notes: '', date: today()};
+    },
     onSet(v, k) { if (k === 'ent') { v.batch = ''; v.item = SALE_ITEM[v.ent]; v.by = v.ent === 'Catfish' ? 'kg' : 'pieces'; } if (k === 'buyer') { const r = [...S.sales].reverse().find(x => x.buyer === v.buyer && x.phone); if (r) v.phone = r.phone; } },
     calc: v => { const q = v.by === 'pieces' ? num(v.heads) : v.by === 'lot' ? 1 : num(v.qty); return {q, total: round(q * num(v.price))}; },
-    outs: v => ({total: money(QT.sale.calc(v).total)}),
+    // the sum written out next to the total, e.g. "2 birds × ₦12,000 ="
+    sum(v) {
+      const {q} = QT.sale.calc(v), w = wordOf(v.ent);
+      if (!num(v.price) || !q) return 'Fill in the number and the price';
+      if (v.by === 'lot') return num(v.heads) ? `${fmtN(v.heads)} ${w}, one total price` : 'One total price';
+      return `${fmtN(q)} ${v.by === 'pieces' ? w : v.by} × ${money(v.price)} =`;
+    },
+    owes(v) { const {total} = QT.sale.calc(v), b = v.pay === 'none' ? total : v.pay === 'part' ? Math.max(0, total - num(v.paid)) : 0; return b ? `<span class="neg">Still owes you ${money(b)}</span>` : ''; },
+    outs: v => ({total: money(QT.sale.calc(v).total), sum: esc(QT.sale.sum(v)), owes: QT.sale.owes(v)}),
     body(v) {
-      const bo = batchOptsQ(v.ent), word = wordOf(v.ent);
+      const bo = batchOptsQ(v.ent), word = wordOf(v.ent), one = word === 'fish' ? 'fish' : word.replace(/s$/, '');
+      const ways = [{v: 'pieces', l: `Price for each ${one}`}, ...(v.ent === 'Catfish' || v.by === 'kg' ? [{v: 'kg', l: 'Price per kg'}] : []), ...(v.by === 'crates' ? [{v: 'crates', l: 'Price per crate'}] : []), {v: 'lot', l: 'One total price'}];
       return `${qf('Which farm?', chips('ent', [...LIVE_ENTS, 'General'].map(e => ({v: e, l: e, dot: DOT[e]})), v.ent))}
         ${v.ent !== 'General' && bo.length ? qf('From which batch?', chips('batch', [...bo, {v: '', l: 'Not sure'}], v.batch)) : ''}
         ${(() => { const it = recent([SALE_ITEM[v.ent], ...S.sales.filter(s => s.ent === v.ent).map(s => s.item)]); return qf('What did you sell?', chips('item', it, v.item) + qin('item', it.includes(v.item) ? '' : v.item, {ph: 'Something else? Type it'})); })()}
         ${qf(`How many ${word}?`, stepper('heads', v.heads || 0, {unit: word}), 'Taken off the batch count')}
-        ${qf('Sold by', chips('by', [{v: 'kg', l: 'Per kg'}, {v: 'pieces', l: 'Per animal'}, {v: 'crates', l: 'Per crate'}, {v: 'lot', l: 'One price for all'}], v.by))}
-        ${v.by !== 'pieces' ? qf(v.by === 'kg' ? 'Total kg' : v.by === 'crates' ? 'How many crates?' : 'Quantity', v.by === 'lot' ? `<input type="hidden" data-q-in="qty" value="1">` + '<small class="mute">Enter the full amount below.</small>' : stepper('qty', v.qty || 0, {unit: v.by === 'kg' ? 'kg' : v.by})) : ''}
-        ${qf(v.by === 'kg' ? 'Price per kg' : v.by === 'pieces' ? 'Price per animal' : v.by === 'crates' ? 'Price per crate' : 'Amount', qin('price', v.price, {type: 'number', big: true, pre: S.settings.currency, ph: '0'}))}
-        <div class="qtotal"><span>Total</span><b data-q-out="total">${money(QT.sale.calc(v).total)}</b></div>
-        ${qf('Payment', chips('pay', [{v: 'full', l: 'Paid in full'}, {v: 'part', l: 'Part paid'}, {v: 'none', l: 'Not paid yet'}], v.pay) + (v.pay === 'part' ? qin('paid', v.paid, {type: 'number', pre: S.settings.currency, ph: 'Amount paid'}) : ''))}
-        ${qf('Buyer (optional)', (recent(S.sales.map(s => s.buyer)).length ? chips('buyer', recent(S.sales.map(s => s.buyer)), v.buyer) : '') + qin('buyer', v.buyer, {ph: 'Name'}) + qin('phone', v.phone || '', {type: 'tel', ph: 'Phone (optional)'}))}
-        ${qdate(v)}`;
+        ${qf('How did you charge?', chips('by', ways, v.by))}
+        ${v.by === 'kg' || v.by === 'crates' ? qf(v.by === 'kg' ? 'How many kg in all?' : 'How many crates?', stepper('qty', v.qty || 0, {unit: v.by})) : ''}
+        ${qf(v.by === 'kg' ? 'Price for 1 kg' : v.by === 'crates' ? 'Price for 1 crate' : v.by === 'lot' ? 'Total money for everything' : `Price for 1 ${one}`, qin('price', v.price, {type: 'number', big: true, pre: S.settings.currency, ph: '0'}))}
+        <div class="qtotal"><span data-q-out="sum">${esc(QT.sale.sum(v))}</span><b data-q-out="total">${money(QT.sale.calc(v).total)}</b></div>
+        ${qf('Did they pay?', chips('pay', [{v: 'full', l: 'Yes, all of it'}, {v: 'part', l: 'Some of it'}, {v: 'none', l: 'Not yet'}], v.pay) + (v.pay === 'part' ? qin('paid', v.paid, {type: 'number', pre: S.settings.currency, ph: 'How much they paid'}) : '') + `<small data-q-out="owes">${QT.sale.owes(v)}</small>`)}
+        ${qf('Buyer', (recent(S.sales.map(s => s.buyer)).length ? chips('buyer', recent(S.sales.map(s => s.buyer)), v.buyer) : '') + qin('buyer', v.buyer, {ph: 'Name'}) + qin('phone', v.phone || '', {type: 'tel', ph: 'Phone (optional)'}))}
+        ${qdate(v)}
+        ${qf('Note (optional)', qin('notes', v.notes || '', {ph: 'e.g. she will pay at month end'}))}`;
     },
     async save(v) {
       if (v.by === 'lot') v.qty = 1;
       const {q, total} = QT.sale.calc(v);
-      if (!q || !num(v.price)) return 'Enter the quantity and price';
-      const w = v.batch && withdrawalUntil(v.batch, v.date);
+      if (!q) return v.by === 'pieces' ? 'Enter how many you sold' : 'Enter the quantity';
+      if (!num(v.price) && !(await ask(`The price is ${money(0)}. Was it free, like a gift?`, {ok: 'Yes, it was free'}))) return 'Enter the price';
+      const old = v.id && byId('sales', v.id);
+      const w = v.batch && (!old || old.batch !== v.batch || old.date !== v.date) && withdrawalUntil(v.batch, v.date);
       if (w && !(await ask(`This batch was given medicine recently. Its withdrawal period runs until ${fmtDate(w)}, so it is not safe to sell or eat before then.\n\nSave the sale anyway?`, {ok: 'Save anyway', danger: true}))) return 'Not saved';
-      add('sales', {date: v.date, ent: v.ent, batch: v.batch, item: v.item || SALE_ITEM[v.ent], heads: num(v.heads) || '', qty: q, unit: v.by === 'lot' ? 'lot' : v.by, price: num(v.price), total,
-        paid: v.pay === 'full' ? total : v.pay === 'none' ? 0 : Math.min(total, num(v.paid)), buyer: (v.buyer || '').trim(), phone: v.phone || ((buyerList().find(o => o.name === (v.buyer || '').trim()) || {}).phone || ''), notes: ''});
+      const rec = {date: v.date, ent: v.ent, batch: v.batch, item: v.item || SALE_ITEM[v.ent], heads: num(v.heads) || '', qty: q, unit: v.by, price: v.by === 'lot' ? total : num(v.price), total,
+        paid: v.pay === 'full' ? total : v.pay === 'none' ? 0 : Math.min(total, num(v.paid)), buyer: (v.buyer || '').trim(), phone: v.phone || ((buyerList().find(o => o.name === (v.buyer || '').trim()) || {}).phone || ''), notes: v.notes || ''};
+      if (old) { Object.assign(old, rec); return `Sale updated: ${money(total)}`; }
+      add('sales', rec);
       return `Sale saved: ${money(total)}`;
     },
-    full: v => ['sales', {ent: v.ent, batch: v.batch, item: v.item, heads: v.heads, price: v.price, buyer: v.buyer, date: v.date}]
+    del: async v => { await delRec('sales', v.id); return !byId('sales', v.id); }
   },
   expense: {
     t: 'Record an expense', icon: 'credit-card',
@@ -2033,9 +2083,9 @@ function openQ(type, preset = {}) {
 function renderQ() {
   const q = QT[Q.type], body = $('#sheetBody');
   const sb = body.querySelector('.sh-body'), top = sb ? sb.scrollTop : 0;
-  body.innerHTML = `<div class="sh-head"><span class="sh-ico">${I(q.icon, 20)}</span><h2>${q.t}</h2><button type="button" class="ib" data-act="qclose" aria-label="Close">${I('x', 20)}</button></div>
+  body.innerHTML = `<div class="sh-head"><span class="sh-ico">${I(q.icon, 20)}</span><h2>${typeof q.t === 'function' ? q.t(Q.v) : q.t}</h2><button type="button" class="ib" data-act="qclose" aria-label="Close">${I('x', 20)}</button></div>
     <div class="sh-body">${q.body(Q.v)}</div>
-    ${q.noSave ? '' : `<div class="sh-foot">${q.full ? `<button type="button" class="btn btn-ghost" data-act="qfull">More details</button>` : ''}<p id="qErr"></p><button type="button" class="btn btn-dark btn-lg" data-act="qsave">Save</button></div>`}`;
+    ${q.noSave ? '' : `<div class="sh-foot">${q.full ? `<button type="button" class="btn btn-ghost" data-act="qfull">More details</button>` : ''}${q.del && Q.v.id ? `<button type="button" class="btn btn-ghost" data-act="qdel">${I('trash-2', 16)}Delete</button>` : ''}<p id="qErr"></p><button type="button" class="btn btn-dark btn-lg" data-act="qsave">Save</button></div>`}`;
   const nb = body.querySelector('.sh-body'); if (nb) nb.scrollTop = top;
 }
 function qOuts() { const q = QT[Q.type]; if (!q.outs) return; const o = q.outs(Q.v); Object.entries(o).forEach(([k, h]) => { const el = $(`#sheet [data-q-out="${k}"]`); if (el) el.innerHTML = h; }); }
@@ -3088,6 +3138,7 @@ const ACTIONS = {
     if (!res || /^(Enter|Choose|Pick|Type|Not saved)/.test(res)) { const el = $('#qErr'); if (el) el.textContent = res || 'Check the details'; return; }
     save(); $('#sheet').close(); render(); toast(res);
   },
+  qdel: async () => { if (await QT[Q.type].del(Q.v)) $('#sheet').close(); },
   qfull: () => { const [col, preset] = QT[Q.type].full(Q.v); $('#sheet').close(); openForm(col, null, preset); },
   give: d => giveDose(d.id),
   applyChart: d => applyChart(d.id),
@@ -3102,6 +3153,8 @@ const ACTIONS = {
   closeBatch: async d => { const b = byId('batches', d.id); if (!(await ask(`Close "${b.name}"? Do this when the batch is all sold. You can still see it under closed batches.`, {ok: 'Close batch'}))) return; b.status = 'Closed'; b.closed = today(); save(); go('batch/' + b.id); toast('Batch closed. Here is its report'); },
   mf: d => { UI.moneyEnt = d.v; UI.moneyMore = false; render(); },
   moneyMore: () => { UI.moneyMore = true; render(); },
+  salesEnt: d => { UI.salesEnt = d.v; render(); },
+  salesOwing: d => { UI.salesOwing = !!d.v; render(); },
   paidSale: d => { const r = byId('sales', d.id); r.paid = r.total; save(); render(); toast('Marked as paid'); },
   paidRent: d => { const r = byId('rentals', d.id); r.paid = r.amount; save(); render(); toast('Marked as paid'); },
   bought: d => {
@@ -3176,8 +3229,8 @@ document.addEventListener('click', e => {
   const b = e.target.closest('[data-act]'); if (!b) return;
   const d = b.dataset, a = d.act;
   e.preventDefault();
-  if (a === 'add') { if ($('#sheet').open) $('#sheet').close(); openForm(d.col, null, d.preset ? JSON.parse(d.preset) : {}); }
-  else if (a === 'edit') openForm(d.col, d.id);
+  if (a === 'add') { if ($('#sheet').open) $('#sheet').close(); d.col === 'sales' ? openQ('sale', d.preset ? JSON.parse(d.preset) : {}) : openForm(d.col, null, d.preset ? JSON.parse(d.preset) : {}); }
+  else if (a === 'edit') { if ($('#sheet').open) $('#sheet').close(); d.col === 'sales' ? openQ('sale', {id: d.id}) : openForm(d.col, d.id); }
   else if (a === 'del') delRec(d.col, d.id);
   else if (a === 'go') go(d.to);
   else if (a === 'period') { UI.period = d.v; render(); }
